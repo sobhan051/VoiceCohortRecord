@@ -1,0 +1,1 @@
+ALTER TABLE responses ALTER COLUMN submission_id DROP NOT NULL;

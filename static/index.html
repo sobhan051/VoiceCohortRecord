@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VCR - پرسشنامه هوشمند کوهرت</title>
+    
+    <script src="/cdn/tailwindcss"></script>
+    <link href="/cdn/vazirmatn" rel="stylesheet">
+    
+    <style>
+        body { font-family: 'Vazirmatn', sans-serif; }
+        .ai-updated {
+            animation: aiPulse 2s ease-out forwards;
+            border-radius: 8px;
+        }
+        @keyframes aiPulse {
+            0% { background-color: #dbeafe; border-color: #3b82f6; }
+            100% { background-color: transparent; border-color: #e5e7eb; }
+        }
+        .mic-recording {
+            background-color: #ef4444 !important;
+            color: white !important;
+            animation: shadowPulse 1.5s infinite;
+        }
+        @keyframes shadowPulse {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+            70% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .custom-radio {
+            width: 1.2rem;
+            height: 1.2rem;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 antialiased">
+
+    <header class="bg-white shadow-sm sticky top-0 z-50 border-b border-gray-100">
+        <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+            <div>
+                <h1 class="text-2xl font-bold text-blue-600">پروژه VCR</h1>
+                <p class="text-xs text-gray-400">سیستم استخراج داده‌های کوهرت با هوش مصنوعی</p>
+            </div>
+            <div id="status-badge" class="bg-blue-50 text-blue-600 px-4 py-2 rounded-full text-sm font-medium">
+                آماده دریافت داده
+            </div>
+        </div>
+    </header>
+
+    <main class="max-w-4xl mx-auto px-4 py-8">
+        <div id="form-container" class="space-y-10">
+            <!-- Loading spinner (shown until JavaScript populates) -->
+            <div class="flex flex-col items-center justify-center py-20 text-gray-400">
+                <svg class="animate-spin h-10 w-10 mb-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <p>در حال بارگذاری ساختار پرسشنامه...</p>
+            </div>
+        </div>
+
+        <div class="mt-12 mb-20 text-center">
+            <button onclick="submitFinalForm()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-12 rounded-2xl shadow-lg transition-all text-xl">
+                تایید نهایی و ثبت پرسشنامه
+            </button>
+        </div>
+    </main>
+
+    <!-- Load all JavaScript from external file -->
+    <script src="/static/app.js"></script>
+</body>
+</html> 
