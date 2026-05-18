@@ -65,6 +65,14 @@
         </div>
     </main>
 
+    <!-- Floating Stop Button (hidden by default) -->
+    <button id="floating-stop-btn" 
+            class="fixed bottom-8 right-8 z-50 w-16 h-16 bg-red-500 text-white rounded-full shadow-2xl hidden items-center justify-center hover:bg-red-600 transition-all mic-recording"
+            onclick="stopRecordingViaFab()">
+        <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+        </svg>
+    </button>
     <!-- Load all JavaScript from external file -->
     <script src="/static/app.js"></script>
 </body>

@@ -1,6 +1,7 @@
 let mediaRecorder;
 let audioChunks = [];
 let recordingStates = {}; // true/false per section
+let activeRecordingSection = null; // which section is currently recording
 
 document.addEventListener('DOMContentLoaded', async () => {
     try {
@@ -13,6 +14,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         container.innerHTML = `<div class="bg-red-50 text-red-600 p-4 rounded-xl border border-red-200">خطا در دریافت اطلاعات از سرور. لطفا اتصال دیتابیس را بررسی کنید.</div>`;
     }
 });
+
+function showFloatingStopButton() {
+    const btn = document.getElementById('floating-stop-btn');
+    btn.classList.remove('hidden');
+    btn.classList.add('flex');
+}
+
+function hideFloatingStopButton() {
+    const btn = document.getElementById('floating-stop-btn');
+    btn.classList.add('hidden');
+    btn.classList.remove('flex');
+}
+
+function stopRecordingViaFab() {
+    if (activeRecordingSection) {
+        toggleRecording(activeRecordingSection); // this will stop because it's currently recording
+    }
+}
+
 
 function renderForm(sections) {
     const container = document.getElementById('form-container');
@@ -115,6 +135,8 @@ async function toggleRecording(sectionKey) {
 
             mediaRecorder.start();
             recordingStates[sectionKey] = true;
+            activeRecordingSection = sectionKey;
+            showFloatingStopButton();
 
             btn.classList.add('mic-recording');
             text.innerText = "توقف ضبط";
@@ -127,7 +149,8 @@ async function toggleRecording(sectionKey) {
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach(track => track.stop());
         recordingStates[sectionKey] = false;
-
+        activeRecordingSection = null;
+        hideFloatingStopButton();
         btn.classList.remove('mic-recording');
         btn.classList.add('bg-blue-100', 'text-blue-600');
         text.innerText = "در حال تحلیل...";
@@ -157,6 +180,8 @@ async function sendAudioToServer(sectionKey, blob) {
         }
     } catch (err) {
         console.error("Fetch error:", err);
+        activeRecordingSection = null;
+        hideFloatingStopButton();
         alert("ارتباط با سرور با مشکل مواجه شد.");
     } finally {
         resetButtonUI(sectionKey);
