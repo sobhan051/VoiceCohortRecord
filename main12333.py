@@ -9,7 +9,7 @@ import uuid
 # Local imports
 import database
 import models
-import ai_engine_old
+import ai_engine
 
 app = FastAPI()
 
@@ -65,7 +65,7 @@ async def process_voice(
         shutil.copyfileobj(audio.file, buffer)
 
     try:
-        result = ai_engine_old.PromptGenerator.process_audio(file_path, questions)
+        result = ai_engine.PromptGenerator.process_audio(file_path, questions)
 
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')

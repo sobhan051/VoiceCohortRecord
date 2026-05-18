@@ -26,22 +26,27 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 _cdn_cache = {}
 
 async def _fetch_cdn_resource(url: str):
-    """Fetch an external resource through the proxy and cache it."""
     if url in _cdn_cache:
         return _cdn_cache[url]
 
-    # Use the same proxy env variable as ai_engine
     proxy_url = os.getenv("GENAI_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
-    limits = httpx.Limits(max_keepalive_connections=1, max_connections=1)
-    transport = httpx.HTTPTransport(proxy=proxy_url) if proxy_url else None
+    transport = httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
 
-    async with httpx.AsyncClient(transport=transport, limits=limits) as client:
+    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
         resp = await client.get(url)
-        resp.raise_for_status()
-        content = resp.text
+        # Manually follow relative redirects (e.g., Location: /3.4.17)
+        while resp.status_code in (301, 302, 303, 307, 308):
+            redirect_url = resp.headers.get('Location', '')
+            if not redirect_url.startswith('http'):
+                # Relative URL – resolve against the original base
+                from urllib.parse import urljoin
+                redirect_url = urljoin(url, redirect_url)
+            resp = await client.get(redirect_url)
+
+    resp.raise_for_status()
+    content = resp.text
     _cdn_cache[url] = content
     return content
-
 
 @app.get("/cdn/tailwindcss")
 async def tailwind_css():

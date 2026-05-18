@@ -44,6 +44,26 @@ function renderForm(sections) {
 }
 
 function renderQuestion(q) {
+
+    if (q.response_type === 'MultiSelect') {
+        let options = q.coding_options;
+        if (typeof options === 'string') {
+            try { options = JSON.parse(options); } catch (e) { options = {}; }
+        }
+        return `
+            <div class="md:col-span-2 space-y-3">
+                <label class="block text-gray-700 font-bold">${q.question_text_fa}</label>
+                <div class="flex flex-wrap gap-4">
+                    ${Object.entries(options || {}).map(([key, val]) => `
+                        <label class="flex items-center gap-3 border-2 border-gray-100 px-4 py-3 rounded-2xl cursor-pointer hover:border-blue-200 hover:bg-blue-50 transition-all">
+                            <input type="checkbox" name="${q.v_code}[]" value="${key}" data-vcode="${q.v_code}" class="w-5 h-5 cursor-pointer">
+                            <span class="text-base">${val}</span>
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
     if (q.response_type === 'Categorical' || q.response_type === 'Dichotomous') {
         let options = q.coding_options;
         if (typeof options === 'string') {
@@ -148,22 +168,35 @@ function applyAiResults(data) {
         const val = data[vCode];
         if (val === null || val === undefined) return;
 
-        const inputs = document.querySelectorAll(`[data-vcode="${vCode}"]`);
-        inputs.forEach(input => {
-            if (input.type === 'radio') {
-                if (input.value == val) {
-                    input.checked = true;
-                    input.closest('label').classList.add('ai-updated');
+        // Handle multi-select fields (comma-separated codes)
+        if (typeof val === 'string' && val.includes(',')) {
+            const codes = val.split(',').map(c => c.trim());
+            codes.forEach(code => {
+                const checkboxes = document.querySelectorAll(`input[type="checkbox"][data-vcode="${vCode}"][value="${code}"]`);
+                checkboxes.forEach(cb => { cb.checked = true; cb.closest('label').classList.add('ai-updated'); });
+                setTimeout(() => checkboxes.forEach(cb => { cb.closest('label').classList.remove('ai-updated'); }), 3000);
+            });
+        } else {
+            // Single value (radio or text)
+            const inputs = document.querySelectorAll(`[data-vcode="${vCode}"]`);
+            inputs.forEach(input => {
+                if (input.type === 'radio') {
+                    if (input.value == val) {
+                        input.checked = true;
+                        input.closest('label').classList.add('ai-updated');
+                    }
+                } else if (input.type === 'checkbox') {
+                    // fallback for single checkbox? not necessary in MultiSelect logic
+                } else {
+                    input.value = val;
+                    input.classList.add('ai-updated');
                 }
-            } else {
-                input.value = val;
-                input.classList.add('ai-updated');
-            }
-            setTimeout(() => {
-                input.classList.remove('ai-updated');
-                if (input.closest('label')) input.closest('label').classList.remove('ai-updated');
-            }, 3000);
-        });
+                setTimeout(() => {
+                    input.classList.remove('ai-updated');
+                    if (input.closest('label')) input.closest('label').classList.remove('ai-updated');
+                }, 3000);
+            });
+        }
     });
 }
 
