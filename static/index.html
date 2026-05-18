@@ -73,6 +73,14 @@
             <rect x="6" y="6" width="12" height="12" rx="2" />
         </svg>
     </button>
+    <!-- Volume Meter Container (hidden by default, appears while recording) -->
+    <div id="volume-meter-container" class="fixed bottom-8 right-28 z-50 hidden flex-col items-center gap-1">
+        <span class="text-xs text-gray-400">میزان صدا</span>
+        <div class="w-3 h-24 bg-gray-200 rounded-full overflow-hidden relative">
+            <div id="volume-meter-fill" class="absolute bottom-0 w-full bg-green-500 rounded-full transition-all duration-75"
+                style="height: 0%;"></div>
+        </div>
+    </div>
     <!-- Load all JavaScript from external file -->
     <script src="/static/app.js"></script>
 </body>

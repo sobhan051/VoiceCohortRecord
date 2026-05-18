@@ -24,15 +24,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 function showFloatingStopButton() {
-    const btn = document.getElementById('floating-stop-btn');
-    btn.classList.remove('hidden');
-    btn.classList.add('flex');
-}
+    document.getElementById('floating-stop-btn').classList.remove('hidden');
+    document.getElementById('floating-stop-btn').classList.add('flex');
+    document.getElementById('volume-meter-container').classList.remove('hidden');
+    document.getElementById('volume-meter-container').classList.add('flex');
+}   
 
 function hideFloatingStopButton() {
-    const btn = document.getElementById('floating-stop-btn');
-    btn.classList.add('hidden');
-    btn.classList.remove('flex');
+    document.getElementById('floating-stop-btn').classList.add('hidden');
+    document.getElementById('floating-stop-btn').classList.remove('flex');
+    document.getElementById('volume-meter-container').classList.add('hidden');
+    document.getElementById('volume-meter-container').classList.remove('flex');
 }
 
 function stopRecordingViaFab() {
@@ -161,12 +163,30 @@ async function toggleRecording(sectionKey) {
             scriptProcessor.onaudioprocess = (event) => {
                 if (!silenceDetectionActive) return;
                 const input = event.inputBuffer.getChannelData(0);
-                // Compute RMS (root‑mean‑square) volume
                 let sum = 0;
                 for (let i = 0; i < input.length; i++) {
                     sum += input[i] * input[i];
                 }
                 const rms = Math.sqrt(sum / input.length);
+
+                // ---------- Update volume meter ----------
+                const meterFill = document.getElementById('volume-meter-fill');
+                if (meterFill) {
+                    // Scale RMS to percentage (0-1). Typical speech RMS is 0.01–0.2, but cap at 0.2 for visual range.
+                    const displayPercent = Math.min((rms / 0.2) * 100, 100);
+                    meterFill.style.height = displayPercent + '%';
+
+                    // Color logic: green = good, yellow = borderline, red = too quiet or too loud (clipping)
+                    if (rms < 0.005) {           // too quiet
+                        meterFill.style.backgroundColor = '#ef4444'; // red
+                    } else if (rms > 0.25) {     // approaching clipping (rare with AGC)
+                        meterFill.style.backgroundColor = '#f97316'; // orange
+                    } else if (rms > 0.15) {     // loud but okay
+                        meterFill.style.backgroundColor = '#eab308'; // yellow
+                    } else {                     // ideal range
+                        meterFill.style.backgroundColor = '#22c55e'; // green
+                    }
+    }
                 console.log('RMS:', rms.toFixed(4));
                 // If we haven't reached the minimum recording time, ignore silence
                 if (Date.now() - recordingStartTime < MIN_RECORDING_MS) return;
@@ -189,6 +209,7 @@ async function toggleRecording(sectionKey) {
             recordingStates[sectionKey] = true;
             activeRecordingSection = sectionKey;
             showFloatingStopButton();
+            document.getElementById('volume-meter-fill').style.height = '0%';
 
             btn.classList.add('mic-recording');
             text.innerText = "توقف ضبط";
