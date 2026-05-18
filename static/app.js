@@ -2,6 +2,14 @@ let mediaRecorder;
 let audioChunks = [];
 let recordingStates = {}; // true/false per section
 let activeRecordingSection = null; // which section is currently recording
+let audioContext = null;
+let analyserNode = null;
+let silenceDetectionActive = false;
+const SILENCE_THRESHOLD = 0.01;   // adjust after testing (0.005 – 0.02)
+const SILENCE_DURATION_MS = 4000; // stop after 2 seconds of silence
+const MIN_RECORDING_MS = 3000;    // don't auto‑stop before 3 seconds
+let silenceStartTime = null;
+let recordingStartTime = null;
 
 document.addEventListener('DOMContentLoaded', async () => {
     try {
@@ -134,6 +142,50 @@ async function toggleRecording(sectionKey) {
             };
 
             mediaRecorder.start();
+            // --- Auto‑stop on silence setup ---
+            recordingStartTime = Date.now();
+            silenceStartTime = null;
+            silenceDetectionActive = true;
+
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaStreamSource(stream);
+            analyserNode = audioContext.createAnalyser();
+            analyserNode.fftSize = 256;
+            source.connect(analyserNode);
+
+            // Use a script processor to check volume every ~100ms
+            const scriptProcessor = audioContext.createScriptProcessor(256, 1, 1);
+            analyserNode.connect(scriptProcessor);
+            scriptProcessor.connect(audioContext.destination); // required but we don't actually output
+
+            scriptProcessor.onaudioprocess = (event) => {
+                if (!silenceDetectionActive) return;
+                const input = event.inputBuffer.getChannelData(0);
+                // Compute RMS (root‑mean‑square) volume
+                let sum = 0;
+                for (let i = 0; i < input.length; i++) {
+                    sum += input[i] * input[i];
+                }
+                const rms = Math.sqrt(sum / input.length);
+                console.log('RMS:', rms.toFixed(4));
+                // If we haven't reached the minimum recording time, ignore silence
+                if (Date.now() - recordingStartTime < MIN_RECORDING_MS) return;
+
+                if (rms < SILENCE_THRESHOLD) {
+                    if (silenceStartTime === null) {
+                        silenceStartTime = Date.now();
+                    } else if (Date.now() - silenceStartTime > SILENCE_DURATION_MS) {
+                        // Auto‑stop
+                        scriptProcessor.disconnect();
+                        if (activeRecordingSection) {
+                            toggleRecording(activeRecordingSection);
+                        }
+                    }
+                } else {
+                    // Reset silence timer when sound is detected
+                    silenceStartTime = null;
+                }
+            };
             recordingStates[sectionKey] = true;
             activeRecordingSection = sectionKey;
             showFloatingStopButton();
@@ -148,6 +200,13 @@ async function toggleRecording(sectionKey) {
     } else {
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach(track => track.stop());
+        // Disconnect audio analysis
+        if (audioContext) {
+            audioContext.close().catch(console.error);
+            audioContext = null;
+            analyserNode = null;
+        }
+        silenceDetectionActive = false;
         recordingStates[sectionKey] = false;
         activeRecordingSection = null;
         hideFloatingStopButton();
