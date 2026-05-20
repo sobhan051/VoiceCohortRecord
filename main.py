@@ -79,6 +79,8 @@ async def get_form(db: Session = Depends(database.get_db)):
         result.append({
             "section_key": s.section_key,
             "name_fa": s.name_fa,
+            "depends_on_vcode": s.depends_on_vcode,   # <-- add
+            "depends_on_value": s.depends_on_value,   # <-- add
             "questions": qs
         })
     return result

@@ -17,6 +17,10 @@ class Section(Base):
     section_key = Column(String(50))
     name_fa = Column(String(255))
     sort_order = Column(Integer, default=0)
+    depends_on_vcode = Column(String(20), nullable=True)
+    depends_on_value = Column(String, nullable=True)
+    skip_if_vcode = Column(String(20), nullable=True)
+    skip_if_value = Column(String, nullable=True)
 
 class Question(Base):
     __tablename__ = "questions"
@@ -30,6 +34,7 @@ class Question(Base):
     unit = Column(String(50))
     manual_prompt = Column(Text)
     sort_order = Column(Integer, default=0)
+
 
 class Submission(Base):
     __tablename__ = "submissions"
