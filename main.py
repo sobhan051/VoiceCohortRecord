@@ -91,6 +91,55 @@ async def get_form(db: Session = Depends(database.get_db)):
         })
     return result
 
+@app.post("/check-section-anomalies")
+async def check_section_anomalies(
+    payload: dict,   # expects { "section_key": "...", "answers": {...} }
+    db: Session = Depends(database.get_db)
+):
+    section_key = payload.get("section_key")
+    answers = payload.get("answers", {})
+
+    if not section_key:
+        return {"error": "section_key is required"}
+
+    # Find the section
+    section = db.query(models.Section).filter(
+        models.Section.section_key == section_key
+    ).first()
+    if not section:
+        return {"error": "Section not found"}
+
+    # Get questions for that section
+    questions = db.query(models.Question).filter(
+        models.Question.section_id == section.section_id
+    ).all()
+
+    # Build metadata for only those questions
+    questions_meta = [
+        {
+            "v_code": q.v_code,
+            "question_text_fa": q.question_text_fa,
+            "response_type": q.response_type,
+            "unit": q.unit,
+            "coding_options": q.coding_options,
+        }
+        for q in questions
+    ]
+
+    # Filter answers to only include the section’s v_codes + perhaps gender (A4) for cross‑consistency
+    relevant_vcodes = {q.v_code for q in questions}
+    # Add gender if present (to catch male + pregnancy)
+    if "A4" in answers:
+        relevant_vcodes.add("A4")
+
+    filtered_answers = {v: answers[v] for v in relevant_vcodes if v in answers}
+
+    try:
+        warnings = ai_engine.PromptGenerator.check_anomalies(filtered_answers, questions_meta)
+        return {"warnings": warnings}
+    except Exception as e:
+        print(f"Per‑section anomaly check error: {e}")
+        return {"error": str(e)}
 
 @app.post("/process-voice")
 async def process_voice(

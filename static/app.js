@@ -299,6 +299,25 @@ async function sendAudioToServer(sectionKey, blob) {
             }
 
             updateQuestionVisibility();
+            // --- Per‑section anomaly check ---
+            try {
+                const anomalyResp = await fetch("/check-section-anomalies", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        section_key: sectionKey,
+                        answers: sessionContext
+                    })
+                });
+                const anomalyData = await anomalyResp.json();
+                if (!anomalyData.error && anomalyData.warnings && anomalyData.warnings.length > 0) {
+                    const warningMessages = anomalyData.warnings.map(w => `• ${w.message} (کد: ${w.v_code})`).join('\n');
+                    alert(`⚠️ هشدارهای بخش "${sectionKey}":\n\n${warningMessages}`);
+                }
+            } catch (anomalyErr) {
+                console.error("Section anomaly check failed:", anomalyErr);
+            }
+            // ------------------------------------
             console.log("AI Extracted:", result);
         }
     } catch (err) {
@@ -386,6 +405,56 @@ document.addEventListener('change', function(event) {
     updateQuestionVisibility();
 });
 
-function submitFinalForm() {
-    alert("اطلاعات با موفقیت در پایگاه داده مرکزی ذخیره شد.");
+async function submitFinalForm() {
+    // If no answers yet, just alert (optional)
+    if (Object.keys(sessionContext).length === 0) {
+        alert("هیچ پاسخی ثبت نشده است.");
+        return;
+    }
+
+    // Show a processing state on the button
+    const submitBtn = document.querySelector('button[onclick="submitFinalForm()"]');
+    const originalText = submitBtn.innerText;
+    submitBtn.disabled = true;
+    submitBtn.innerText = "در حال بررسی اطلاعات...";
+
+    try {
+        const response = await fetch("/check-anomalies", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(sessionContext)
+        });
+        const result = await response.json();
+
+        if (result.error) {
+            alert("خطا در بررسی اطلاعات: " + result.error);
+            return;
+        }
+
+        const warnings = result.warnings || [];
+        if (warnings.length > 0) {
+            // Build a readable list of warnings
+            const warningMessages = warnings.map(w => `• ${w.message} (کد: ${w.v_code})`).join('\n');
+            const severity = warnings.some(w => w.severity === 'critical') ? 'هشدار جدی' : 'هشدار';
+            const userChoice = confirm(
+                `${severity}:\n\n${warningMessages}\n\nآیا می‌خواهید با وجود این موارد ادامه دهید؟`
+            );
+            if (!userChoice) {
+                // User wants to go back and fix
+                submitBtn.disabled = false;
+                submitBtn.innerText = originalText;
+                return;
+            }
+        }
+        // If no warnings or user confirmed, proceed with final submission
+        // Here you would normally send the data to a save endpoint,
+        // but for now we'll just show success.
+        alert("اطلاعات با موفقیت در پایگاه داده مرکزی ذخیره شد.");
+    } catch (err) {
+        console.error("Anomaly check error:", err);
+        alert("خطا در ارتباط با سرور");
+    } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerText = originalText;
+    }
 }

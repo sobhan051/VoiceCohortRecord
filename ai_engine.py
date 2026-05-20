@@ -15,6 +15,89 @@ load_dotenv()
 
 class PromptGenerator:
     @staticmethod
+    def check_anomalies(answers, questions_meta):
+        """
+        answers: dict { v_code: extracted_value }
+        questions_meta: list of dicts with keys: v_code, question_text_fa, response_type, unit, coding_options
+        Returns list of warning dicts: { "v_code": ..., "message": ..., "severity": "warning"|"critical" }
+        """
+        # Build a human‑readable description of each answered field
+        field_descriptions = []
+        for q in questions_meta:
+            vc = q["v_code"]
+            if vc not in answers or answers[vc] is None:
+                continue
+            val = answers[vc]
+            desc = f"Q: {q['question_text_fa']} (code {vc}, type {q['response_type']}"
+            if q.get("unit"):
+                desc += f", unit {q['unit']}"
+            desc += f") → ANSWER: {val}"
+            if q.get("coding_options"):
+                try:
+                    opts = json.loads(q["coding_options"]) if isinstance(q["coding_options"], str) else q["coding_options"]
+                    # show the label if code matches
+                    if val in opts:
+                        desc += f" ({opts[val]})"
+                except:
+                    pass
+            field_descriptions.append(desc)
+
+        prompt = (
+            "You are a medical quality control assistant. "
+            "Review the following patient answers for clinical inconsistencies, "
+            "medically impossible values, contradictions, or suspicious combinations.\n\n"
+            + "\n".join(field_descriptions) +
+            "\n\nReturn a JSON array of warnings. Each warning must have: "
+            "'v_code' (the code of the suspicious field, or 'general' if it's a global issue), "
+            "'message' (short explanation in Persian), and "
+            "'severity' (either 'warning' or 'critical'). "
+            "If everything looks consistent, return an empty array.\n"
+            "Output ONLY a valid JSON array, no other text."
+        )
+
+        # Use a simple schema for the array
+        warning_schema = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "v_code": {"type": "string"},
+                    "message": {"type": "string"},
+                    "severity": {"type": "string", "enum": ["warning", "critical"]}
+                },
+                "required": ["v_code", "message", "severity"]
+            }
+        }
+
+        # Reuse the proxy setup (copy from process_audio or factor out)
+        retry_config = HttpRetryOptions(attempts=1)
+        proxy_url = os.getenv("GENAI_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
+        http_config = HttpOptions(retry_options=retry_config, timeout=60_000)
+        if proxy_url:
+            sync_transport = httpx.HTTPTransport(proxy=proxy_url)
+            http_config = HttpOptions(
+                retry_options=retry_config,
+                timeout=60_000,
+                client_args={"transport": sync_transport},
+            )
+        client = genai.Client(http_options=http_config)
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[prompt],
+            config=GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=warning_schema,
+                temperature=0.0,
+            ),
+        )
+
+        print("\n=== ANOMALY RAW RESPONSE ===")
+        print(response.text)
+        print("=== END ANOMALY ===\n")
+        return json.loads(response.text)
+
+    @staticmethod
     def _build_response_schema(questions, all_sections=None):
         data_props = {}
         conf_props = {}
