@@ -1,5 +1,6 @@
 import json
 import os
+import httpx
 from dotenv import load_dotenv
 from google import genai
 from google.genai.types import (
@@ -8,35 +9,30 @@ from google.genai.types import (
     HttpRetryOptions,
     GenerateContentConfig,
 )
-import httpx
 
 load_dotenv()
 
 
 class PromptGenerator:
     @staticmethod
-    def _build_response_schema(questions):
+    def _build_response_schema(questions, all_sections=None):
         data_props = {}
         conf_props = {}
         reason_props = {}
-
         for q in questions:
             vc = q.v_code
-            # data field
             data_props[vc] = {
                 "type": "string",
                 "nullable": True,
                 "description": (q.question_text_fa[:120] if q.question_text_fa else ""),
             }
-            # confidence field
             conf_props[vc] = {
                 "type": "number",
                 "nullable": True,
                 "minimum": 0.0,
                 "maximum": 1.0,
-                "description": f"Confidence score for {vc}",
+                "description": f"Confidence for {vc}",
             }
-            # reason field (string, empty if confidence is 1)
             reason_props[vc] = {
                 "type": "string",
                 "description": f"Reason why confidence is less than 1 for {vc}. Empty string if confidence is 1.",
@@ -64,15 +60,22 @@ class PromptGenerator:
             },
             "required": ["transcript", "data", "confidence", "confidence_reasons"],
         }
+
+        if all_sections:
+            schema["properties"]["skip_sections"] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of section keys to skip (hide) because the patient's speech makes them irrelevant.",
+            }
+
         return schema
 
     @staticmethod
-    def generate_section_prompt(questions):
+    def generate_section_prompt(questions, all_sections=None):
         specs = []
         for q in questions:
             if q.manual_prompt:
                 specs.append(f"CODE {q.v_code}: {q.manual_prompt}")
-                print("the manual prompt is not empyty!!\n")
                 continue
 
             q_type = q.response_type
@@ -97,22 +100,9 @@ class PromptGenerator:
                     f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}"
                 )
 
-            elif q_type == "MultiSelect":
-                if q.coding_options:
-                    try:
-                        opts = json.loads(q.coding_options) if isinstance(q.coding_options, str) else q.coding_options
-                    except:
-                        opts = {}
-                    option_list = ", ".join(f"{k}={v}" for k, v in opts.items())
-                    rule = f"Return ONLY a comma-separated list of the integer codes that are mentioned. Options: {option_list}. If none mentioned, return null. Example: '1,3,5'."
-                else:
-                    rule = "Return a comma-separated list of codes mentioned. If none, return null."
-                specs.append(f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}")
-
             elif q_type in ("Numeric", "Continuous"):
                 if unit:
                     unit_clean = unit.strip().replace(" ", "")
-                    print(f"clean unit: {unit_clean}\n")
                     rule = (
                         f"Extract the numeric value. The expected unit is '{unit_clean}'. "
                         f"If the speaker mentions a value in a different unit (e.g., متر, میلی‌متر), "
@@ -147,35 +137,39 @@ class PromptGenerator:
             "You are a medical data entry assistant. "
             "Analyze the audio transcript and extract answers according to the rules below.\n\n"
             + "\n".join(specs)
-            + "\n\nIMPORTANT: Follow the rule for each CODE exactly. "
+            + "\n\n"
+        )
+        if all_sections:
+            section_list = "\n".join(
+                f"- {s['section_key']}: {s['name_fa']}" for s in all_sections
+            )
+            prompt += (
+                f"The form contains these sections:\n{section_list}\n\n"
+                "Based on the patient's speech, some sections may be entirely irrelevant. "
+                "Output a `skip_sections` array containing the section keys of any sections that should be hidden. "
+                "For example, if the patient is male, skip the reproductive history section. "
+                "If no sections should be skipped, return an empty array.\n\n"
+            )
+        prompt += (
+            "IMPORTANT: Follow the rule for each CODE exactly. "
             "For every field also provide a confidence score between 0 and 1 "
             "(0 = completely guessing, 1 = absolutely certain). "
             "Additionally, for each field provide a short reason (in Persian or English) explaining "
-            "why the confidence is lower than 1. If confidence is 1, the reason must be an empty string. "
-            "Examples of reasons: 'audio unclear', 'ambiguous value', 'not explicitly mentioned but inferred', "
-            "'multiple possible matches'."
+            "why the confidence is lower than 1. If confidence is 1, the reason must be an empty string."
         )
         return prompt
 
     @staticmethod
-    def process_audio(audio_path, questions):
+    def process_audio(audio_path, questions, all_sections=None):
         retry_config = HttpRetryOptions(attempts=1)
-
         proxy_url = os.getenv("GENAI_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
 
-        http_config = None
         if proxy_url:
             sync_transport = httpx.HTTPTransport(proxy=proxy_url)
-            async_transport = (
-                httpx.AsyncHTTPTransport(proxy=proxy_url)
-                if hasattr(httpx, "AsyncHTTPTransport")
-                else None
-            )
             http_config = HttpOptions(
                 retry_options=retry_config,
                 timeout=60_000,
                 client_args={"transport": sync_transport},
-                async_client_args={"transport": async_transport} if async_transport else {},
             )
         else:
             http_config = HttpOptions(retry_options=retry_config, timeout=60_000)
@@ -183,8 +177,8 @@ class PromptGenerator:
         client = genai.Client(http_options=http_config)
         model_name = "gemini-2.5-flash"
 
-        prompt_text = PromptGenerator.generate_section_prompt(questions)
-        schema = PromptGenerator._build_response_schema(questions)
+        prompt_text = PromptGenerator.generate_section_prompt(questions, all_sections)
+        schema = PromptGenerator._build_response_schema(questions, all_sections)
 
         with open(audio_path, "rb") as f:
             audio_bytes = f.read()
@@ -199,7 +193,7 @@ class PromptGenerator:
                 temperature=0.0,
             ),
         )
-        # response = "kir"
+
         print("\n=== RAW RESPONSE ===")
         print(response.text)
         print("=== END RAW ===\n")

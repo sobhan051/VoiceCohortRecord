@@ -1,39 +1,27 @@
-/**
- * VCR Project – Voice Cohort Form
- * Full client‑side logic with:
- *   - Conditional question/section visibility
- *   - Auto‑stop on silence with live volume meter
- *   - Floating stop button
- *   - Multi‑select checkboxes
- *   - Session context for dynamic form
- */
-
 let mediaRecorder;
 let audioChunks = [];
-let recordingStates = {};            // true/false per section
-let activeRecordingSection = null;   // which section is currently recording
+let recordingStates = {};
+let activeRecordingSection = null;
 let audioContext = null;
 let analyserNode = null;
 let silenceDetectionActive = false;
 
-const SILENCE_THRESHOLD = 0.01;     // adjust after testing
-const SILENCE_DURATION_MS = 4000;   // stop after 4 seconds of silence
-const MIN_RECORDING_MS = 3000;      // don’t auto‑stop before 3 seconds
+const SILENCE_THRESHOLD = 0.01;
+const SILENCE_DURATION_MS = 4000;
+const MIN_RECORDING_MS = 3000;
 let silenceStartTime = null;
 let recordingStartTime = null;
 
-// Session context: collected answers  { v_code: "value" }
-let sessionContext = {};
+let sessionContext = {};           // { v_code: value }
+let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value } }
+let aiSkipSections = new Set();   // section keys temporarily hidden by AI suggestion
 
-let sectionMetaMap = {};    // { section_key: { depends_on_vcode, depends_on_value } }
-
-// ------------------- Initial Load ----------------------
 document.addEventListener('DOMContentLoaded', async () => {
     try {
         const res = await fetch('/get-form-structure');
         const sections = await res.json();
         renderForm(sections);
-        updateQuestionVisibility();    // apply initial visibility
+        updateQuestionVisibility();
     } catch (err) {
         console.error("Failed to load form structure:", err);
         document.getElementById('form-container').innerHTML =
@@ -41,42 +29,37 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 });
 
-// ------------------- Floating Stop Button --------------
+// ---------- Floating Stop Button & Volume Meter ----------
 function showFloatingStopButton() {
-    const btn = document.getElementById('floating-stop-btn');
-    const meter = document.getElementById('volume-meter-container');
-    if (btn) { btn.classList.remove('hidden'); btn.classList.add('flex'); }
-    if (meter) { meter.classList.remove('hidden'); meter.classList.add('flex'); }
+    document.getElementById('floating-stop-btn').classList.remove('hidden');
+    document.getElementById('floating-stop-btn').classList.add('flex');
+    document.getElementById('volume-meter-container').classList.remove('hidden');
+    document.getElementById('volume-meter-container').classList.add('flex');
 }
 
 function hideFloatingStopButton() {
-    const btn = document.getElementById('floating-stop-btn');
-    const meter = document.getElementById('volume-meter-container');
-    if (btn) { btn.classList.add('hidden'); btn.classList.remove('flex'); }
-    if (meter) { meter.classList.add('hidden'); meter.classList.remove('flex'); }
+    document.getElementById('floating-stop-btn').classList.add('hidden');
+    document.getElementById('floating-stop-btn').classList.remove('flex');
+    document.getElementById('volume-meter-container').classList.add('hidden');
+    document.getElementById('volume-meter-container').classList.remove('flex');
 }
 
 function stopRecordingViaFab() {
     if (activeRecordingSection) {
-        toggleRecording(activeRecordingSection);   // will stop because recordingStates is true
+        toggleRecording(activeRecordingSection);
     }
 }
 
-// ------------------- Visibility Logic ------------------
-function getQuestionMeta(vcode) {
-    return questionMetaMap[vcode] || null;
-}
-
+// ---------- Section‑Level Visibility (DB rules + AI skips) ----------
 function updateQuestionVisibility() {
-    // Section‑level visibility only
     document.querySelectorAll('section[id^="sect-"]').forEach(sectionEl => {
         const sectionKey = sectionEl.id.replace('sect-', '');
         const meta = sectionMetaMap[sectionKey];
         let sectionShouldShow = true;
 
+        // 1. Hard‑coded database dependency
         if (meta && meta.depends_on_vcode) {
             const parentValue = sessionContext[meta.depends_on_vcode];
-            // Hide if parent unanswered or mismatched
             if (parentValue === undefined || parentValue === null || parentValue === '') {
                 sectionShouldShow = false;
             } else if (parentValue != meta.depends_on_value) {
@@ -84,17 +67,22 @@ function updateQuestionVisibility() {
             }
         }
 
+        // 2. AI‑suggested skip (can only hide, not force show)
+        if (sectionShouldShow && aiSkipSections.has(sectionKey)) {
+            sectionShouldShow = false;
+        }
+
         sectionEl.style.display = sectionShouldShow ? '' : 'none';
         sectionEl.style.opacity = sectionShouldShow ? '1' : '0';
     });
 }
-// ------------------- Rendering --------------------------
+
+// ---------- Rendering ----------
 function renderForm(sections) {
     const container = document.getElementById('form-container');
     container.innerHTML = '';
 
     sections.forEach(section => {
-        // Store section metadata for visibility
         sectionMetaMap[section.section_key] = {
             depends_on_vcode: section.depends_on_vcode || null,
             depends_on_value: section.depends_on_value || null
@@ -126,7 +114,6 @@ function renderForm(sections) {
 }
 
 function renderQuestion(q) {
-    // Multi‑select (checkboxes)
     if (q.response_type === 'MultiSelect') {
         let options = q.coding_options;
         if (typeof options === 'string') {
@@ -146,8 +133,6 @@ function renderQuestion(q) {
             </div>
         `;
     }
-
-    // Categorical / Dichotomous (radio buttons)
     if (q.response_type === 'Categorical' || q.response_type === 'Dichotomous') {
         let options = q.coding_options;
         if (typeof options === 'string') {
@@ -167,8 +152,6 @@ function renderQuestion(q) {
             </div>
         `;
     }
-
-    // Default: Text / Numeric / Date / etc.
     return `
         <div class="flex flex-col gap-2">
             <label class="text-gray-600 text-sm font-medium">${q.question_text_fa}</label>
@@ -181,14 +164,14 @@ function renderQuestion(q) {
     `;
 }
 
-// ------------------- Recording Logic (with auto‑stop) ----
+// ---------- Recording Logic (with auto‑stop & volume meter) ----------
 async function toggleRecording(sectionKey) {
     const btn = document.getElementById(`btn-${sectionKey}`);
     const icon = document.getElementById(`icon-${sectionKey}`);
     const text = document.getElementById(`text-${sectionKey}`);
 
     if (!recordingStates[sectionKey]) {
-        // === START RECORDING ===
+        // START
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             mediaRecorder = new MediaRecorder(stream);
@@ -205,7 +188,6 @@ async function toggleRecording(sectionKey) {
             silenceStartTime = null;
             silenceDetectionActive = true;
 
-            // Set up audio analysis for volume meter + silence detection
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
             const source = audioContext.createMediaStreamSource(stream);
             analyserNode = audioContext.createAnalyser();
@@ -220,34 +202,28 @@ async function toggleRecording(sectionKey) {
                 if (!silenceDetectionActive) return;
                 const input = event.inputBuffer.getChannelData(0);
                 let sum = 0;
-                for (let i = 0; i < input.length; i++) {
-                    sum += input[i] * input[i];
-                }
+                for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
                 const rms = Math.sqrt(sum / input.length);
 
-                // Update volume meter
                 const meterFill = document.getElementById('volume-meter-fill');
                 if (meterFill) {
                     const displayPercent = Math.min((rms / 0.2) * 100, 100);
                     meterFill.style.height = displayPercent + '%';
-                    if (rms < 0.005) meterFill.style.backgroundColor = '#ef4444';      // red
-                    else if (rms > 0.25) meterFill.style.backgroundColor = '#f97316'; // orange
-                    else if (rms > 0.15) meterFill.style.backgroundColor = '#eab308'; // yellow
-                    else meterFill.style.backgroundColor = '#22c55e';                 // green
+                    if (rms < 0.005) meterFill.style.backgroundColor = '#ef4444';
+                    else if (rms > 0.25) meterFill.style.backgroundColor = '#f97316';
+                    else if (rms > 0.15) meterFill.style.backgroundColor = '#eab308';
+                    else meterFill.style.backgroundColor = '#22c55e';
                 }
 
                 console.log('RMS:', rms.toFixed(4));
-
-                // Auto‑stop on silence
                 if (Date.now() - recordingStartTime < MIN_RECORDING_MS) return;
+
                 if (rms < SILENCE_THRESHOLD) {
                     if (silenceStartTime === null) {
                         silenceStartTime = Date.now();
                     } else if (Date.now() - silenceStartTime > SILENCE_DURATION_MS) {
                         scriptProcessor.disconnect();
-                        if (activeRecordingSection) {
-                            toggleRecording(activeRecordingSection);
-                        }
+                        if (activeRecordingSection) toggleRecording(activeRecordingSection);
                     }
                 } else {
                     silenceStartTime = null;
@@ -259,23 +235,19 @@ async function toggleRecording(sectionKey) {
             showFloatingStopButton();
             document.getElementById('volume-meter-fill').style.height = '0%';
 
-            // UI: recording state
             btn.classList.add('mic-recording');
             text.innerText = "توقف ضبط";
             icon.innerHTML = `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>`;
         } catch (err) {
             console.error("Mic access denied:", err);
             alert("خطا: اجازه دسترسی به میکروفون داده نشده است.");
-            // Clean up in case of error
             activeRecordingSection = null;
             hideFloatingStopButton();
         }
     } else {
-        // === STOP RECORDING ===
+        // STOP
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach(track => track.stop());
-
-        // Clean up audio analysis
         if (audioContext) {
             audioContext.close().catch(console.error);
             audioContext = null;
@@ -286,7 +258,6 @@ async function toggleRecording(sectionKey) {
         activeRecordingSection = null;
         hideFloatingStopButton();
 
-        // UI: processing state
         btn.classList.remove('mic-recording');
         btn.classList.add('bg-blue-100', 'text-blue-600');
         text.innerText = "در حال تحلیل...";
@@ -294,7 +265,7 @@ async function toggleRecording(sectionKey) {
     }
 }
 
-// ------------------- Server Communication --------------
+// ---------- Server Communication ----------
 async function sendAudioToServer(sectionKey, blob) {
     const formData = new FormData();
     formData.append("audio", blob, "voice.wav");
@@ -311,13 +282,22 @@ async function sendAudioToServer(sectionKey, blob) {
         }
 
         if (result.data) {
-            // Update session context from AI extraction
+            // Update session context with extracted values
             Object.entries(result.data).forEach(([vcode, val]) => {
                 if (val !== null && val !== undefined) {
                     sessionContext[vcode] = String(val);
                 }
             });
+
+            // Apply extracted data to the UI
             applyAiResults(result.data);
+
+            // Handle AI skip_sections
+            if (result.skip_sections && Array.isArray(result.skip_sections)) {
+                aiSkipSections.clear();
+                result.skip_sections.forEach(key => aiSkipSections.add(key));
+            }
+
             updateQuestionVisibility();
             console.log("AI Extracted:", result);
         }
@@ -329,13 +309,12 @@ async function sendAudioToServer(sectionKey, blob) {
     }
 }
 
-// ------------------- Apply AI Results -------------------
+// ---------- Apply AI results to the form ----------
 function applyAiResults(data) {
     Object.keys(data).forEach(vCode => {
         const val = data[vCode];
         if (val === null || val === undefined) return;
 
-        // Multi‑select (comma‑separated)
         if (typeof val === 'string' && val.includes(',')) {
             const codes = val.split(',').map(c => c.trim());
             codes.forEach(code => {
@@ -351,7 +330,6 @@ function applyAiResults(data) {
                 }, 3000);
             });
         } else {
-            // Radio or text
             const inputs = document.querySelectorAll(`[data-vcode="${vCode}"]`);
             inputs.forEach(input => {
                 if (input.type === 'radio') {
@@ -385,7 +363,7 @@ function resetButtonUI(sectionKey) {
     </svg>`;
 }
 
-// ------------------- Manual Input Handling --------------
+// ---------- Manual Input Listener (clears AI skips) ----------
 document.addEventListener('change', function(event) {
     const input = event.target;
     if (!input.dataset.vcode) return;
@@ -394,24 +372,20 @@ document.addEventListener('change', function(event) {
     let value;
 
     if (input.type === 'checkbox') {
-        // Build comma‑separated list from all checked boxes with the same vcode
         const checkboxes = document.querySelectorAll(`input[type="checkbox"][data-vcode="${vcode}"]:checked`);
         value = Array.from(checkboxes).map(cb => cb.value).join(',');
     } else if (input.type === 'radio') {
-        if (input.checked) {
-            value = input.value;
-        } else {
-            return;   // ignore uncheck (only fires on newly checked radio)
-        }
+        if (input.checked) value = input.value;
+        else return;
     } else {
         value = input.value;
     }
 
     sessionContext[vcode] = value;
+    aiSkipSections.clear();   // manual input invalidates AI skips
     updateQuestionVisibility();
 });
 
-// Placeholder submit
 function submitFinalForm() {
     alert("اطلاعات با موفقیت در پایگاه داده مرکزی ذخیره شد.");
 }

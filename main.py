@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 import os
 import shutil
 import uuid
-import httpx  # <-- NEW
+import httpx
 
 # Local imports
 import database
@@ -32,21 +32,26 @@ async def _fetch_cdn_resource(url: str):
     proxy_url = os.getenv("GENAI_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
     transport = httpx.AsyncHTTPTransport(proxy=proxy_url) if proxy_url else None
 
-    async with httpx.AsyncClient(transport=transport, follow_redirects=False) as client:
-        resp = await client.get(url)
-        # Manually follow relative redirects (e.g., Location: /3.4.17)
-        while resp.status_code in (301, 302, 303, 307, 308):
-            redirect_url = resp.headers.get('Location', '')
-            if not redirect_url.startswith('http'):
-                # Relative URL – resolve against the original base
-                from urllib.parse import urljoin
-                redirect_url = urljoin(url, redirect_url)
-            resp = await client.get(redirect_url)
+    try:
+        async with httpx.AsyncClient(
+            transport=transport,
+            follow_redirects=True,       # let httpx handle redirects automatically
+            timeout=10.0                 # 10-second timeout
+        ) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            content = resp.text
+        _cdn_cache[url] = content
+        return content
+    except Exception as e:
+        print(f"WARNING: Failed to fetch CDN resource {url}: {e}")
+        # Return empty/fallback content so the page doesn't break
+        if url.endswith('.css') or 'vazirmatn' in url:
+            return '/* CDN fetch failed */'
+        elif url.endswith('.js') or 'tailwindcss' in url:
+            return '/* CDN fetch failed */'
+        return ''
 
-    resp.raise_for_status()
-    content = resp.text
-    _cdn_cache[url] = content
-    return content
 
 @app.get("/cdn/tailwindcss")
 async def tailwind_css():
@@ -68,6 +73,7 @@ async def vazirmatn_css():
 async def read_index():
     return FileResponse('static/index.html')
 
+
 @app.get("/get-form-structure")
 async def get_form(db: Session = Depends(database.get_db)):
     sections = db.query(models.Section).order_by(models.Section.sort_order).all()
@@ -79,11 +85,12 @@ async def get_form(db: Session = Depends(database.get_db)):
         result.append({
             "section_key": s.section_key,
             "name_fa": s.name_fa,
-            "depends_on_vcode": s.depends_on_vcode,   # <-- add
-            "depends_on_value": s.depends_on_value,   # <-- add
+            "depends_on_vcode": s.depends_on_vcode,
+            "depends_on_value": s.depends_on_value,
             "questions": qs
         })
     return result
+
 
 @app.post("/process-voice")
 async def process_voice(
@@ -98,11 +105,19 @@ async def process_voice(
     if not section:
         return {"error": "سکشن مورد نظر یافت نشد"}
 
+    # 2. Build list of all sections for AI context
+    all_sections = (
+        db.query(models.Section.section_key, models.Section.name_fa)
+        .order_by(models.Section.sort_order)
+        .all()
+    )
+    sections_list = [{"section_key": s.section_key, "name_fa": s.name_fa} for s in all_sections]
+
     questions = db.query(models.Question).filter(
         models.Question.section_id == section.section_id
     ).all()
 
-    # 2. Save audio to disk
+    # 3. Save audio to disk
     file_extension = audio.filename.split('.')[-1]
     unique_filename = f"{uuid.uuid4()}.{file_extension}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
@@ -111,12 +126,12 @@ async def process_voice(
         shutil.copyfileobj(audio.file, buffer)
 
     try:
-        result = ai_engine.PromptGenerator.process_audio(file_path, questions)
+        result = ai_engine.PromptGenerator.process_audio(file_path, questions, sections_list)
 
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')
 
-        # 3. Save responses (submission_id is now optional)
+        # 4. Save responses
         for v_code, val in extracted_data.items():
             if val is None:
                 continue
@@ -134,18 +149,26 @@ async def process_voice(
                 db.add(new_response)
 
         db.commit()
-        return result
+
+        # Return data plus additional AI insights
+        return {
+            "data": extracted_data,
+            "confidence": result.get("confidence", {}),
+            "confidence_reasons": result.get("confidence_reasons", {}),
+            "skip_sections": result.get("skip_sections", []),
+        }
 
     except Exception as e:
         print(f"CRITICAL ERROR: {str(e)}")
         return {"error": str(e)}
 
     finally:
-        # 4. Clean up uploaded file to save space
+        # 5. Clean up uploaded file
         try:
             os.remove(file_path)
         except OSError:
             pass
+
 
 if __name__ == "__main__":
     import uvicorn
