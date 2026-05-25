@@ -1,3 +1,5 @@
+// app.js – Full client‑side logic with non‑blocking anomaly warnings
+
 let mediaRecorder;
 let audioChunks = [];
 let recordingStates = {};
@@ -14,7 +16,8 @@ let recordingStartTime = null;
 
 let sessionContext = {};           // { v_code: value }
 let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value } }
-let aiSkipSections = new Set();   // section keys temporarily hidden by AI suggestion
+let aiSkipSections = new Set();   // section keys hidden by AI
+let fieldWarnings = {};           // { v_code: [ { message, severity } ] }
 
 document.addEventListener('DOMContentLoaded', async () => {
     try {
@@ -45,9 +48,7 @@ function hideFloatingStopButton() {
 }
 
 function stopRecordingViaFab() {
-    if (activeRecordingSection) {
-        toggleRecording(activeRecordingSection);
-    }
+    if (activeRecordingSection) toggleRecording(activeRecordingSection);
 }
 
 // ---------- Section‑Level Visibility (DB rules + AI skips) ----------
@@ -57,7 +58,6 @@ function updateQuestionVisibility() {
         const meta = sectionMetaMap[sectionKey];
         let sectionShouldShow = true;
 
-        // 1. Hard‑coded database dependency
         if (meta && meta.depends_on_vcode) {
             const parentValue = sessionContext[meta.depends_on_vcode];
             if (parentValue === undefined || parentValue === null || parentValue === '') {
@@ -67,7 +67,6 @@ function updateQuestionVisibility() {
             }
         }
 
-        // 2. AI‑suggested skip (can only hide, not force show)
         if (sectionShouldShow && aiSkipSections.has(sectionKey)) {
             sectionShouldShow = false;
         }
@@ -92,7 +91,10 @@ function renderForm(sections) {
             <section class="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-gray-100"
                      id="sect-${section.section_key}">
                 <div class="flex justify-between items-center mb-6 pb-4 border-b border-gray-50">
-                    <h2 class="text-xl font-bold text-gray-800">${section.name_fa}</h2>
+                    <h2 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                        ${section.name_fa}
+                        <span id="badge-${section.section_key}" class="section-warning-badge"></span>
+                    </h2>
                     <button onclick="toggleRecording('${section.section_key}')"
                             id="btn-${section.section_key}"
                             class="flex items-center gap-2 px-5 py-2.5 bg-gray-100 rounded-2xl hover:bg-gray-200 transition-all group">
@@ -153,7 +155,7 @@ function renderQuestion(q) {
         `;
     }
     return `
-        <div class="flex flex-col gap-2">
+        <div class="flex flex-col gap-2 relative">
             <label class="text-gray-600 text-sm font-medium">${q.question_text_fa}</label>
             <div class="relative">
                 <input type="text" data-vcode="${q.v_code}"
@@ -164,14 +166,13 @@ function renderQuestion(q) {
     `;
 }
 
-// ---------- Recording Logic (with auto‑stop & volume meter) ----------
+// ---------- Recording Logic (auto‑stop + volume meter) unchanged ----------
 async function toggleRecording(sectionKey) {
     const btn = document.getElementById(`btn-${sectionKey}`);
     const icon = document.getElementById(`icon-${sectionKey}`);
     const text = document.getElementById(`text-${sectionKey}`);
 
     if (!recordingStates[sectionKey]) {
-        // START
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             mediaRecorder = new MediaRecorder(stream);
@@ -245,7 +246,6 @@ async function toggleRecording(sectionKey) {
             hideFloatingStopButton();
         }
     } else {
-        // STOP
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach(track => track.stop());
         if (audioContext) {
@@ -265,7 +265,7 @@ async function toggleRecording(sectionKey) {
     }
 }
 
-// ---------- Server Communication ----------
+// ---------- Server Communication with non‑blocking anomaly check ----------
 async function sendAudioToServer(sectionKey, blob) {
     const formData = new FormData();
     formData.append("audio", blob, "voice.wav");
@@ -282,43 +282,53 @@ async function sendAudioToServer(sectionKey, blob) {
         }
 
         if (result.data) {
-            // Update session context with extracted values
+            // Update session context
             Object.entries(result.data).forEach(([vcode, val]) => {
                 if (val !== null && val !== undefined) {
                     sessionContext[vcode] = String(val);
                 }
             });
 
-            // Apply extracted data to the UI
             applyAiResults(result.data);
 
-            // Handle AI skip_sections
+            // Handle AI skips
             if (result.skip_sections && Array.isArray(result.skip_sections)) {
                 aiSkipSections.clear();
                 result.skip_sections.forEach(key => aiSkipSections.add(key));
             }
 
             updateQuestionVisibility();
-            // --- Per‑section anomaly check ---
+
+            // --- Anomaly check (non‑blocking) ---
             try {
                 const anomalyResp = await fetch("/check-section-anomalies", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                         section_key: sectionKey,
-                        answers: sessionContext
+                        answers: sessionContext,
+                        confidence_reasons: result.confidence_reasons || {}  
                     })
                 });
                 const anomalyData = await anomalyResp.json();
                 if (!anomalyData.error && anomalyData.warnings && anomalyData.warnings.length > 0) {
-                    const warningMessages = anomalyData.warnings.map(w => `• ${w.message} (کد: ${w.v_code})`).join('\n');
-                    alert(`⚠️ هشدارهای بخش "${sectionKey}":\n\n${warningMessages}`);
+                    // Store warnings per field and update UI
+                    anomalyData.warnings.forEach(w => {
+                        if (!fieldWarnings[w.v_code]) {
+                            fieldWarnings[w.v_code] = [];
+                        }
+                        fieldWarnings[w.v_code].push({
+                            message: w.message,
+                            severity: w.severity || 'warning'
+                        });
+                    });
+                    applyFieldWarnings();
+                    updateSectionBadges();
+                    updateWarningPanel();
                 }
             } catch (anomalyErr) {
                 console.error("Section anomaly check failed:", anomalyErr);
             }
-            // ------------------------------------
-            console.log("AI Extracted:", result);
         }
     } catch (err) {
         console.error("Fetch error:", err);
@@ -328,7 +338,87 @@ async function sendAudioToServer(sectionKey, blob) {
     }
 }
 
-// ---------- Apply AI results to the form ----------
+// ---------- Warning UI functions ----------
+function applyFieldWarnings() {
+    // Remove old warning styles from all inputs and their parent labels
+    document.querySelectorAll('.field-warning, .field-critical').forEach(el => {
+        el.classList.remove('field-warning', 'field-critical');
+    });
+
+    Object.entries(fieldWarnings).forEach(([vcode, warnings]) => {
+        if (warnings.length === 0 || vcode === 'general') return;
+
+        const input = document.querySelector(`[data-vcode="${vcode}"]`);
+        if (!input) return;
+
+        const hasCritical = warnings.some(w => w.severity === 'critical');
+        const className = hasCritical ? 'field-critical' : 'field-warning';
+
+        if (input.type === 'radio' || input.type === 'checkbox') {
+            // Style the visible label card
+            const label = input.closest('label');
+            if (label) {
+                label.classList.add(className);
+            }
+        } else {
+            // Text / numeric – style the input itself
+            input.classList.add(className);
+        }
+    });
+}
+
+function updateSectionBadges() {
+    document.querySelectorAll('section[id^="sect-"]').forEach(sectionEl => {
+        const sectionKey = sectionEl.id.replace('sect-', '');
+        let count = 0;
+
+        // Get all unique v_codes in this section that have warnings
+        const warnedVcodes = new Set();
+        sectionEl.querySelectorAll('[data-vcode]').forEach(input => {
+            const vcode = input.dataset.vcode;
+            if (vcode !== 'general' && fieldWarnings[vcode] && fieldWarnings[vcode].length > 0) {
+                warnedVcodes.add(vcode);
+            }
+        });
+        count = warnedVcodes.size;   // one count per field, regardless of warning count
+
+        const badge = document.getElementById(`badge-${sectionKey}`);
+        if (badge) {
+            badge.textContent = count > 0 ? count : '';
+            badge.classList.toggle('active', count > 0);
+        }
+    });
+}
+
+function updateWarningPanel() {
+    const totalWarnings = Object.values(fieldWarnings).reduce((sum, arr) => sum + arr.length, 0);
+    const toggleBtn = document.getElementById('warning-toggle-btn');
+    const countSpan = document.getElementById('warning-count');
+    const listEl = document.getElementById('warning-list');
+
+    if (totalWarnings > 0) {
+        toggleBtn.style.display = 'flex';
+        countSpan.textContent = totalWarnings;
+        // Build warning list
+        listEl.innerHTML = '';
+        Object.entries(fieldWarnings).forEach(([vcode, warnings]) => {
+            warnings.forEach(w => {
+                listEl.innerHTML += `<div class="warning-item"><span class="vcode">${vcode}</span>: ${w.message}</div>`;
+            });
+        });
+    } else {
+        toggleBtn.style.display = 'none';
+        listEl.innerHTML = '';
+        listEl.classList.remove('active');
+    }
+}
+
+function toggleWarningPanel() {
+    const list = document.getElementById('warning-list');
+    list.classList.toggle('active');
+}
+
+// ---------- Apply AI results (unchanged) ----------
 function applyAiResults(data) {
     Object.keys(data).forEach(vCode => {
         const val = data[vCode];
@@ -382,14 +472,13 @@ function resetButtonUI(sectionKey) {
     </svg>`;
 }
 
-// ---------- Manual Input Listener (clears AI skips) ----------
+// ---------- Manual Input Listener (clears AI skips & field warnings on change) ----------
 document.addEventListener('change', function(event) {
     const input = event.target;
     if (!input.dataset.vcode) return;
 
     const vcode = input.dataset.vcode;
     let value;
-
     if (input.type === 'checkbox') {
         const checkboxes = document.querySelectorAll(`input[type="checkbox"][data-vcode="${vcode}"]:checked`);
         value = Array.from(checkboxes).map(cb => cb.value).join(',');
@@ -401,60 +490,16 @@ document.addEventListener('change', function(event) {
     }
 
     sessionContext[vcode] = value;
+    // Remove warnings for this field when user manually edits
+    delete fieldWarnings[vcode];
+    applyFieldWarnings();
+    updateSectionBadges();
+    updateWarningPanel();
+
     aiSkipSections.clear();   // manual input invalidates AI skips
     updateQuestionVisibility();
 });
 
-async function submitFinalForm() {
-    // If no answers yet, just alert (optional)
-    if (Object.keys(sessionContext).length === 0) {
-        alert("هیچ پاسخی ثبت نشده است.");
-        return;
-    }
-
-    // Show a processing state on the button
-    const submitBtn = document.querySelector('button[onclick="submitFinalForm()"]');
-    const originalText = submitBtn.innerText;
-    submitBtn.disabled = true;
-    submitBtn.innerText = "در حال بررسی اطلاعات...";
-
-    try {
-        const response = await fetch("/check-anomalies", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(sessionContext)
-        });
-        const result = await response.json();
-
-        if (result.error) {
-            alert("خطا در بررسی اطلاعات: " + result.error);
-            return;
-        }
-
-        const warnings = result.warnings || [];
-        if (warnings.length > 0) {
-            // Build a readable list of warnings
-            const warningMessages = warnings.map(w => `• ${w.message} (کد: ${w.v_code})`).join('\n');
-            const severity = warnings.some(w => w.severity === 'critical') ? 'هشدار جدی' : 'هشدار';
-            const userChoice = confirm(
-                `${severity}:\n\n${warningMessages}\n\nآیا می‌خواهید با وجود این موارد ادامه دهید؟`
-            );
-            if (!userChoice) {
-                // User wants to go back and fix
-                submitBtn.disabled = false;
-                submitBtn.innerText = originalText;
-                return;
-            }
-        }
-        // If no warnings or user confirmed, proceed with final submission
-        // Here you would normally send the data to a save endpoint,
-        // but for now we'll just show success.
-        alert("اطلاعات با موفقیت در پایگاه داده مرکزی ذخیره شد.");
-    } catch (err) {
-        console.error("Anomaly check error:", err);
-        alert("خطا در ارتباط با سرور");
-    } finally {
-        submitBtn.disabled = false;
-        submitBtn.innerText = originalText;
-    }
+function submitFinalForm() {
+    alert("اطلاعات با موفقیت در پایگاه داده مرکزی ذخیره شد.");
 }

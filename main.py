@@ -100,6 +100,7 @@ async def check_section_anomalies(
 ):
     section_key = payload.get("section_key")
     answers = payload.get("answers", {})
+    confidence_reasons = payload.get("confidence_reasons", None) 
 
     if not section_key:
         return {"error": "section_key is required"}
@@ -137,7 +138,7 @@ async def check_section_anomalies(
     filtered_answers = {v: answers[v] for v in relevant_vcodes if v in answers}
 
     try:
-        warnings = ai_engine.PromptGenerator.check_anomalies(filtered_answers, questions_meta)
+        warnings = ai_engine.PromptGenerator.check_anomalies(filtered_answers, questions_meta, confidence_reasons)
         return {"warnings": warnings}
     except Exception as e:
         print(f"Per‑section anomaly check error: {e}")

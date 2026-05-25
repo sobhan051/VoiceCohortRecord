@@ -33,6 +33,82 @@
             height: 1.2rem;
             cursor: pointer;
         }
+        /* Section warning badge */
+        .section-warning-badge {
+            background-color: #f97316;
+            color: white;
+            border-radius: 999px;
+            padding: 0 8px;
+            font-size: 0.75rem;
+            font-weight: bold;
+            margin-right: 8px;
+            display: none;
+        }
+        .section-warning-badge.active {
+            display: inline-block;
+        }
+             
+        .field-warning {
+            border-color: #f97316 !important;   /* orange */
+        }
+        .field-critical {
+            border-color: #ef4444 !important;   /* red */
+        }
+        label.field-warning {
+            border-color: #f97316 !important;
+        }
+        label.field-critical {
+            border-color: #ef4444 !important;
+        }
+        /* Fixed warning summary panel */
+        #warning-summary-panel {
+            position: fixed;
+            bottom: 24px;
+            left: 24px;
+            z-index: 40;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 8px;
+        }
+        #warning-toggle-btn {
+            background: #fff;
+            border: 2px solid #f97316;
+            color: #f97316;
+            border-radius: 999px;
+            padding: 8px 16px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        #warning-list {
+            background: white;
+            border: 1px solid #f97316;
+            border-radius: 12px;
+            padding: 12px;
+            max-width: 320px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+            display: none;
+        }
+        #warning-list.active {
+            display: block;
+        }
+        .warning-item {
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+            font-size: 0.9rem;
+            color: #333;
+        }
+        .warning-item:last-child {
+            border-bottom: none;
+        }
+        .warning-item .vcode {
+            font-weight: bold;
+            margin-left: 4px;
+        }
     </style>
 </head>
 <body class="bg-gray-50 text-gray-800 antialiased">
@@ -80,6 +156,13 @@
             <div id="volume-meter-fill" class="absolute bottom-0 w-full bg-green-500 rounded-full transition-all duration-75"
                 style="height: 0%;"></div>
         </div>
+    </div>
+    <!-- Anomaly Warning Summary Panel -->
+    <div id="warning-summary-panel">
+        <button id="warning-toggle-btn" onclick="toggleWarningPanel()" style="display:none;">
+            <span id="warning-count">0</span> هشدار
+        </button>
+        <div id="warning-list"></div>
     </div>
     <!-- Load all JavaScript from external file -->
     <script src="/static/app.js"></script>
