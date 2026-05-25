@@ -4,6 +4,16 @@ from sqlalchemy.sql import func
 import uuid
 from database import Base
 
+class User(Base):
+    __tablename__ = "users"
+    user_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    first_name = Column(String(100))
+    last_name = Column(String(100))
+    national_code = Column(String(20), nullable=False, unique=True)
+    phone_number = Column(String(20))
+    role = Column(Integer, default=1)  # 1=regular user, 2=admin, etc.
+    created_at = Column(DateTime, server_default=func.now())
+
 class Form(Base):
     __tablename__ = "forms"
     form_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -58,3 +68,15 @@ class Response(Base):
     extracted_value_json = Column(JSONB)              # if you need structured data
     ai_confidence = Column(Float)                     # if you plan to store confidence
     processed_at = Column(DateTime, server_default=func.now())
+
+
+class ApiLog(Base):
+    __tablename__ = "api_logs"
+    log_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    submission_id = Column(UUID(as_uuid=True), ForeignKey("submissions.submission_id"), nullable=True)
+    section_key = Column(String(50))
+    model_name = Column(String(100))
+    prompt_sent = Column(Text)
+    response_received = Column(Text)
+    tokens_used = Column(Integer)
+    created_at = Column(DateTime, server_default=func.now())
