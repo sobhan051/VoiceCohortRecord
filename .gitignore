@@ -2,3 +2,9 @@
 venv/
 *.sql
 uploads/
+CLAUDE.md
+knowledge.md
+.agents/
+*.pyc
+__pycache__/
+.claude/

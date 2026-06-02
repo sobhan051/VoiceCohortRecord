@@ -15,9 +15,10 @@ let silenceStartTime = null;
 let recordingStartTime = null;
 
 let sessionContext = {};           // { v_code: value }
+let sessionConfidence = {};        // { v_code: 0..1 } – AI confidence per field
 let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value } }
-let aiSkipSections = new Set();   // section keys hidden by AI
 let fieldWarnings = {};           // { v_code: [ { message, severity } ] }
+let currentSubmissionId = null;   // set once a patient/submission is started
 
 document.addEventListener('DOMContentLoaded', async () => {
     try {
@@ -30,7 +31,70 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('form-container').innerHTML =
             `<div class="bg-red-50 text-red-600 p-4 rounded-xl border border-red-200">خطا در دریافت اطلاعات از سرور. لطفا اتصال دیتابیس را بررسی کنید.</div>`;
     }
+    // Require a patient before any recording can happen
+    openPatientModal();
 });
+
+// ---------- Patient / Submission gate ----------
+function openPatientModal() {
+    document.getElementById('pt-error').classList.add('hidden');
+    document.getElementById('patient-modal').classList.remove('hidden');
+}
+
+function changePatient() {
+    // Start a fresh questionnaire for a different patient
+    window.location.reload();
+}
+
+async function startSubmission() {
+    const errEl = document.getElementById('pt-error');
+    const btn = document.getElementById('pt-submit');
+    const national = document.getElementById('pt-national').value.trim();
+
+    if (!national) {
+        errEl.textContent = 'کد ملی الزامی است.';
+        errEl.classList.remove('hidden');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'در حال شروع...';
+    try {
+        const res = await fetch('/start-submission', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user: {
+                    first_name: document.getElementById('pt-first').value.trim(),
+                    last_name: document.getElementById('pt-last').value.trim(),
+                    national_code: national,
+                    phone_number: document.getElementById('pt-phone').value.trim(),
+                }
+            })
+        });
+        const data = await res.json();
+        if (data.error) {
+            errEl.textContent = data.error;
+            errEl.classList.remove('hidden');
+            return;
+        }
+
+        currentSubmissionId = data.submission_id;
+        document.getElementById('patient-modal').classList.add('hidden');
+        const bar = document.getElementById('patient-bar');
+        bar.classList.remove('hidden');
+        const name = data.user_name || 'بیمار';
+        document.getElementById('patient-bar-name').textContent =
+            `${name} — کد ملی ${data.national_code}`;
+    } catch (err) {
+        console.error('start-submission failed:', err);
+        errEl.textContent = 'ارتباط با سرور با مشکل مواجه شد.';
+        errEl.classList.remove('hidden');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'شروع';
+    }
+}
 
 // ---------- Floating Stop Button & Volume Meter ----------
 function showFloatingStopButton() {
@@ -51,7 +115,7 @@ function stopRecordingViaFab() {
     if (activeRecordingSection) toggleRecording(activeRecordingSection);
 }
 
-// ---------- Section‑Level Visibility (DB rules + AI skips) ----------
+// ---------- Section‑Level Visibility (DB rules) ----------
 function updateQuestionVisibility() {
     document.querySelectorAll('section[id^="sect-"]').forEach(sectionEl => {
         const sectionKey = sectionEl.id.replace('sect-', '');
@@ -65,10 +129,6 @@ function updateQuestionVisibility() {
             } else if (parentValue != meta.depends_on_value) {
                 sectionShouldShow = false;
             }
-        }
-
-        if (sectionShouldShow && aiSkipSections.has(sectionKey)) {
-            sectionShouldShow = false;
         }
 
         sectionEl.style.display = sectionShouldShow ? '' : 'none';
@@ -172,6 +232,12 @@ async function toggleRecording(sectionKey) {
     const icon = document.getElementById(`icon-${sectionKey}`);
     const text = document.getElementById(`text-${sectionKey}`);
 
+    // Can't record without an open submission to attach answers to
+    if (!recordingStates[sectionKey] && !currentSubmissionId) {
+        openPatientModal();
+        return;
+    }
+
     if (!recordingStates[sectionKey]) {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -270,6 +336,7 @@ async function sendAudioToServer(sectionKey, blob) {
     const formData = new FormData();
     formData.append("audio", blob, "voice.wav");
     formData.append("section_key", sectionKey);
+    if (currentSubmissionId) formData.append("submission_id", currentSubmissionId);
 
     try {
         const response = await fetch("/process-voice", { method: "POST", body: formData });
@@ -289,13 +356,16 @@ async function sendAudioToServer(sectionKey, blob) {
                 }
             });
 
-            applyAiResults(result.data);
-
-            // Handle AI skips
-            if (result.skip_sections && Array.isArray(result.skip_sections)) {
-                aiSkipSections.clear();
-                result.skip_sections.forEach(key => aiSkipSections.add(key));
+            // Track AI confidence per field for the final submit
+            if (result.confidence) {
+                Object.entries(result.confidence).forEach(([vcode, conf]) => {
+                    if (conf !== null && conf !== undefined) {
+                        sessionConfidence[vcode] = conf;
+                    }
+                });
             }
+
+            applyAiResults(result.data);
 
             updateQuestionVisibility();
 
@@ -472,7 +542,7 @@ function resetButtonUI(sectionKey) {
     </svg>`;
 }
 
-// ---------- Manual Input Listener (clears AI skips & field warnings on change) ----------
+// ---------- Manual Input Listener (clears field warnings on change) ----------
 document.addEventListener('change', function(event) {
     const input = event.target;
     if (!input.dataset.vcode) return;
@@ -496,10 +566,43 @@ document.addEventListener('change', function(event) {
     updateSectionBadges();
     updateWarningPanel();
 
-    aiSkipSections.clear();   // manual input invalidates AI skips
     updateQuestionVisibility();
 });
 
-function submitFinalForm() {
-    alert("اطلاعات با موفقیت در پایگاه داده مرکزی ذخیره شد.");
+async function submitFinalForm() {
+    if (!currentSubmissionId) {
+        openPatientModal();
+        return;
+    }
+
+    // Warn (but don't block) if anomalies are still open
+    const openWarnings = Object.values(fieldWarnings).reduce((s, a) => s + a.length, 0);
+    if (openWarnings > 0 &&
+        !confirm(`${openWarnings} هشدار بررسی‌نشده وجود دارد. آیا مطمئن هستید که می‌خواهید ثبت نهایی کنید؟`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/complete-submission', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                submission_id: currentSubmissionId,
+                answers: sessionContext,
+                confidence: sessionConfidence,
+            })
+        });
+        const data = await res.json();
+        if (data.error) {
+            alert(`خطا در ثبت نهایی: ${data.error}`);
+            return;
+        }
+        alert(`اطلاعات با موفقیت ثبت شد. (${data.saved} پاسخ ذخیره شد)`);
+        // Lock further edits for this patient; require an explicit new start
+        currentSubmissionId = null;
+        document.getElementById('status-badge').textContent = 'ثبت شد';
+    } catch (err) {
+        console.error('complete-submission failed:', err);
+        alert('ارتباط با سرور با مشکل مواجه شد.');
+    }
 }

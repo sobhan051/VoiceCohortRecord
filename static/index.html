@@ -126,6 +126,15 @@
     </header>
 
     <main class="max-w-4xl mx-auto px-4 py-8">
+        <!-- Active patient bar (shown once a submission is started) -->
+        <div id="patient-bar" class="hidden mb-6 bg-white rounded-2xl shadow-sm border border-gray-100 px-5 py-4 flex items-center justify-between">
+            <div>
+                <p class="text-xs text-gray-400">در حال ثبت برای</p>
+                <p id="patient-bar-name" class="font-bold text-gray-800"></p>
+            </div>
+            <button onclick="changePatient()" class="text-sm text-blue-600 hover:text-blue-700 font-medium">تغییر بیمار</button>
+        </div>
+
         <div id="form-container" class="space-y-10">
             <!-- Loading spinner (shown until JavaScript populates) -->
             <div class="flex flex-col items-center justify-center py-20 text-gray-400">
@@ -140,6 +149,32 @@
             </button>
         </div>
     </main>
+
+    <!-- Patient gate: choose/create a respondent before recording -->
+    <div id="patient-modal" class="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center px-4 hidden">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
+            <h2 class="text-xl font-bold text-gray-800 mb-1">شروع پرسشنامه جدید</h2>
+            <p class="text-sm text-gray-400 mb-6">اطلاعات بیمار را وارد کنید تا پاسخ‌ها به پرونده او ثبت شود.</p>
+            <div class="space-y-4">
+                <div class="grid grid-cols-2 gap-4">
+                    <input id="pt-first" type="text" placeholder="نام"
+                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500">
+                    <input id="pt-last" type="text" placeholder="نام خانوادگی"
+                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500">
+                </div>
+                <input id="pt-national" type="text" placeholder="کد ملی (الزامی)"
+                       class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500">
+                <input id="pt-phone" type="text" placeholder="شماره تماس"
+                       class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500">
+                <p id="pt-error" class="text-sm text-red-500 hidden"></p>
+                <button onclick="startSubmission()" id="pt-submit"
+                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl transition-all">
+                    شروع
+                </button>
+            </div>
+        </div>
+    </div>
+
 
     <!-- Floating Stop Button (hidden by default) -->
     <button id="floating-stop-btn" 

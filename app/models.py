@@ -2,7 +2,9 @@ from sqlalchemy import Column, String, Integer, ForeignKey, Text, DateTime, Floa
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
 import uuid
-from database import Base
+
+from app.db.base import Base
+
 
 class User(Base):
     __tablename__ = "users"
@@ -14,11 +16,13 @@ class User(Base):
     role = Column(Integer, default=1)  # 1=regular user, 2=admin, etc.
     created_at = Column(DateTime, server_default=func.now())
 
+
 class Form(Base):
     __tablename__ = "forms"
     form_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     form_name = Column(String(255), nullable=False)
     category = Column(String(100))
+
 
 class Section(Base):
     __tablename__ = "sections"
@@ -31,6 +35,7 @@ class Section(Base):
     depends_on_value = Column(String, nullable=True)
     skip_if_vcode = Column(String(20), nullable=True)
     skip_if_value = Column(String, nullable=True)
+
 
 class Question(Base):
     __tablename__ = "questions"
@@ -54,6 +59,7 @@ class Submission(Base):
     status = Column(String(20), default='draft')
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now())
+
 
 class Response(Base):
     __tablename__ = "responses"

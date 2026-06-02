@@ -1,7 +1,6 @@
 import json
-import os
+
 import httpx
-from dotenv import load_dotenv
 from google import genai
 from google.genai.types import (
     Part,
@@ -10,7 +9,30 @@ from google.genai.types import (
     GenerateContentConfig,
 )
 
-load_dotenv()
+from app.core import config
+
+
+def _build_client():
+    """Create a genai client wired through the optional outbound proxy.
+
+    The proxy transport is built inline per call (cheap) and `attempts=1`
+    disables genai's internal retries, matching the original behavior.
+    """
+    retry_config = HttpRetryOptions(attempts=1)
+    proxy_url = config.get_proxy_url()
+    if proxy_url:
+        sync_transport = httpx.HTTPTransport(proxy=proxy_url)
+        http_config = HttpOptions(
+            retry_options=retry_config,
+            timeout=config.GENAI_TIMEOUT_MS,
+            client_args={"transport": sync_transport},
+        )
+    else:
+        http_config = HttpOptions(
+            retry_options=retry_config,
+            timeout=config.GENAI_TIMEOUT_MS,
+        )
+    return genai.Client(http_options=http_config)
 
 
 class PromptGenerator:
@@ -80,20 +102,10 @@ class PromptGenerator:
             }
         }
 
-        retry_config = HttpRetryOptions(attempts=1)
-        proxy_url = os.getenv("GENAI_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
-        http_config = HttpOptions(retry_options=retry_config, timeout=60_000)
-        if proxy_url:
-            sync_transport = httpx.HTTPTransport(proxy=proxy_url)
-            http_config = HttpOptions(
-                retry_options=retry_config,
-                timeout=60_000,
-                client_args={"transport": sync_transport},
-            )
-        client = genai.Client(http_options=http_config)
+        client = _build_client()
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model=config.ANOMALY_MODEL,
             contents=[prompt],
             config=GenerateContentConfig(
                 response_mime_type="application/json",
@@ -108,7 +120,7 @@ class PromptGenerator:
         return json.loads(response.text)
 
     @staticmethod
-    def _build_response_schema(questions, all_sections=None):
+    def _build_response_schema(questions):
         data_props = {}
         conf_props = {}
         reason_props = {}
@@ -154,17 +166,10 @@ class PromptGenerator:
             "required": ["transcript", "data", "confidence", "confidence_reasons"],
         }
 
-        if all_sections:
-            schema["properties"]["skip_sections"] = {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "List of section keys to skip (hide) because the patient's speech makes them irrelevant.",
-            }
-
         return schema
 
     @staticmethod
-    def generate_section_prompt(questions, all_sections=None):
+    def generate_section_prompt(questions):
         specs = []
         for q in questions:
             if q.manual_prompt:
@@ -232,17 +237,6 @@ class PromptGenerator:
             + "\n".join(specs)
             + "\n\n"
         )
-        if all_sections:
-            section_list = "\n".join(
-                f"- {s['section_key']}: {s['name_fa']}" for s in all_sections
-            )
-            prompt += (
-                f"The form contains these sections:\n{section_list}\n\n"
-                "Based on the patient's speech, some sections may be entirely irrelevant. "
-                "Output a `skip_sections` array containing the section keys of any sections that should be hidden. "
-                "For example, if the patient is male, skip the reproductive history section. "
-                "If no sections should be skipped, return an empty array.\n\n"
-            )
         prompt += (
             "IMPORTANT: Follow the rule for each CODE exactly. "
             "For every field also provide a confidence score between 0 and 1 "
@@ -253,25 +247,12 @@ class PromptGenerator:
         return prompt
 
     @staticmethod
-    def process_audio(audio_path, questions, all_sections=None):
-        retry_config = HttpRetryOptions(attempts=1)
-        proxy_url = os.getenv("GENAI_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
+    def process_audio(audio_path, questions):
+        client = _build_client()
+        model_name = config.AUDIO_MODEL
 
-        if proxy_url:
-            sync_transport = httpx.HTTPTransport(proxy=proxy_url)
-            http_config = HttpOptions(
-                retry_options=retry_config,
-                timeout=60_000,
-                client_args={"transport": sync_transport},
-            )
-        else:
-            http_config = HttpOptions(retry_options=retry_config, timeout=60_000)
-
-        client = genai.Client(http_options=http_config)
-        model_name = "gemini-2.5-flash-lite"
-
-        prompt_text = PromptGenerator.generate_section_prompt(questions, all_sections)
-        schema = PromptGenerator._build_response_schema(questions, all_sections)
+        prompt_text = PromptGenerator.generate_section_prompt(questions)
+        schema = PromptGenerator._build_response_schema(questions)
 
         with open(audio_path, "rb") as f:
             audio_bytes = f.read()
