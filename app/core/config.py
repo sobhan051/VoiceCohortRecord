@@ -20,17 +20,47 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 # PostgreSQL DSN. database session creation crashes if this is unset.
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# The google-genai client reads GOOGLE_API_KEY / GEMINI_API_KEY from the env
-# directly; we don't pass it explicitly.
-
 # Default Gemini models per call type.
-AUDIO_MODEL = "gemini-2.5-flash-lite"
+AUDIO_MODEL = "gemini-2.5-flash"
 ANOMALY_MODEL = "gemini-2.5-flash"
 
-# Outbound HTTP timeout for Gemini calls (milliseconds).
-GENAI_TIMEOUT_MS = 60_000
+# Outbound HTTP timeout for Gemini calls (milliseconds). Audio extraction over a
+# proxy can take a while; too low a value times out a healthy request and forces
+# the field worker to re-record. Tunable via env.
+GENAI_TIMEOUT_MS = int(os.getenv("GENAI_TIMEOUT_MS", "60000"))
+
+# Failover/retry tuning for quota ("RESOURCE_EXHAUSTED", 429) and transient
+# overload ("UNAVAILABLE", 503 / "INTERNAL", 500) errors.
+# Seconds to wait before retrying after a transient overload error.
+GENAI_RETRY_BACKOFF_SECONDS = float(os.getenv("GENAI_RETRY_BACKOFF_SECONDS", "1.5"))
+# Extra retries (beyond one shot per key) for transient overload, used only when
+# at least one key still has quota left.
+GENAI_OVERLOAD_RETRIES = int(os.getenv("GENAI_OVERLOAD_RETRIES", "2"))
 
 
 def get_proxy_url():
     """Optional outbound proxy honored by both the Gemini client and CDN proxy."""
     return os.getenv("GENAI_PROXY") or os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
+
+
+def get_api_keys():
+    """Return the ordered list of Gemini API keys for round-robin failover.
+
+    Accepts a comma-separated list in ``GEMINI_API_KEYS`` (preferred) or in the
+    singular ``GEMINI_API_KEY`` / ``GOOGLE_API_KEY`` (which may itself hold a
+    comma-separated list). Order is preserved and duplicates removed. An empty
+    list means "no explicit key" — the genai client then falls back to its own
+    environment lookup.
+    """
+    raw = (
+        os.getenv("GEMINI_API_KEYS")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or ""
+    )
+    keys = []
+    for part in raw.split(","):
+        k = part.strip()
+        if k and k not in keys:
+            keys.append(k)
+    return keys

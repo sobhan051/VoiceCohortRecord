@@ -19,6 +19,7 @@ let sessionConfidence = {};        // { v_code: 0..1 } – AI confidence per fie
 let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value } }
 let fieldWarnings = {};           // { v_code: [ { message, severity } ] }
 let currentSubmissionId = null;   // set once a patient/submission is started
+let lastAudioBySection = {};      // { section_key: Blob } – kept so a failed send can be retried without re-recording
 
 document.addEventListener('DOMContentLoaded', async () => {
     try {
@@ -86,6 +87,10 @@ async function startSubmission() {
         const name = data.user_name || 'بیمار';
         document.getElementById('patient-bar-name').textContent =
             `${name} — کد ملی ${data.national_code}`;
+
+        // Progressive resume: prefill any sections this patient already answered
+        // and mark them done, so they only need to complete the rest.
+        loadExistingProgress(data);
     } catch (err) {
         console.error('start-submission failed:', err);
         errEl.textContent = 'ارتباط با سرور با مشکل مواجه شد.';
@@ -93,6 +98,49 @@ async function startSubmission() {
     } finally {
         btn.disabled = false;
         btn.textContent = 'شروع';
+    }
+}
+
+// ---------- Progressive resume ----------
+// Prefill answers saved on a previous visit and mark answered sections "done".
+function loadExistingProgress(data) {
+    const answers = data.answers || {};
+    const confidence = data.confidence || {};
+    const answeredSections = data.answered_sections || [];
+
+    // Seed client state so the final submit includes prior answers untouched.
+    Object.entries(answers).forEach(([vcode, val]) => {
+        if (val !== null && val !== undefined) sessionContext[vcode] = String(val);
+    });
+    Object.entries(confidence).forEach(([vcode, conf]) => {
+        if (conf !== null && conf !== undefined) sessionConfidence[vcode] = conf;
+    });
+
+    // Reuse the AI-fill routine to populate the inputs from saved answers.
+    if (Object.keys(answers).length > 0) {
+        applyAiResults(answers);
+        updateQuestionVisibility();
+    }
+
+    answeredSections.forEach(markSectionAnswered);
+
+    if (answeredSections.length > 0) {
+        document.getElementById('status-badge').textContent =
+            `ادامه پرسشنامه (${answeredSections.length} بخش تکمیل‌شده)`;
+    }
+}
+
+// Visually flag a section the patient already completed. The mic stays enabled
+// so they can re-record to correct an answer.
+function markSectionAnswered(sectionKey) {
+    const sectionEl = document.getElementById(`sect-${sectionKey}`);
+    if (!sectionEl) return;
+    sectionEl.classList.add('section-answered');
+
+    const badge = document.getElementById(`badge-${sectionKey}`);
+    if (badge && !badge.classList.contains('active')) {
+        badge.textContent = '✓ تکمیل شد';
+        badge.classList.add('section-done-badge');
     }
 }
 
@@ -333,8 +381,16 @@ async function toggleRecording(sectionKey) {
 
 // ---------- Server Communication with non‑blocking anomaly check ----------
 async function sendAudioToServer(sectionKey, blob) {
+    // Hold onto the recording so any failure can be retried without re-recording.
+    if (blob) lastAudioBySection[sectionKey] = blob;
+    const audioBlob = blob || lastAudioBySection[sectionKey];
+    if (!audioBlob) {
+        alert("صدای ضبط‌شده‌ای برای ارسال یافت نشد. لطفا دوباره ضبط کنید.");
+        return;
+    }
+
     const formData = new FormData();
-    formData.append("audio", blob, "voice.wav");
+    formData.append("audio", audioBlob, "voice.wav");
     formData.append("section_key", sectionKey);
     if (currentSubmissionId) formData.append("submission_id", currentSubmissionId);
 
@@ -344,7 +400,7 @@ async function sendAudioToServer(sectionKey, blob) {
 
         if (result.error) {
             console.error("Server returned error:", result.error);
-            alert(`خطا در پردازش صدا: ${result.error}`);
+            offerAudioRetry(sectionKey, `خطا در پردازش صدا: ${result.error}`);
             return;
         }
 
@@ -368,6 +424,8 @@ async function sendAudioToServer(sectionKey, blob) {
             applyAiResults(result.data);
 
             updateQuestionVisibility();
+            markSectionAnswered(sectionKey);
+            delete lastAudioBySection[sectionKey];  // succeeded – drop the held audio
 
             // --- Anomaly check (non‑blocking) ---
             try {
@@ -402,9 +460,23 @@ async function sendAudioToServer(sectionKey, blob) {
         }
     } catch (err) {
         console.error("Fetch error:", err);
-        alert("ارتباط با سرور با مشکل مواجه شد.");
+        offerAudioRetry(sectionKey, "ارتباط با سرور با مشکل مواجه شد.");
     } finally {
         resetButtonUI(sectionKey);
+    }
+}
+
+// On a failed send the recording is still in memory; let the user retry it with
+// one click instead of re-recording the whole section.
+function offerAudioRetry(sectionKey, message) {
+    if (lastAudioBySection[sectionKey] &&
+        confirm(`${message}\n\nصدای ضبط‌شده حفظ شده است. آیا می‌خواهید دوباره ارسال شود؟`)) {
+        // Re-show the analyzing state, then resend the held blob.
+        const text = document.getElementById(`text-${sectionKey}`);
+        if (text) text.innerText = "در حال تحلیل...";
+        sendAudioToServer(sectionKey, null);
+    } else {
+        alert(message);
     }
 }
 

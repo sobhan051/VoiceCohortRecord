@@ -4,9 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VCR - پرسشنامه هوشمند کوهرت</title>
-    
-    <script src="/cdn/tailwindcss"></script>
-    <link href="/cdn/vazirmatn" rel="stylesheet">
+
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link href="https://cdn.jsdelivr.net/npm/@fontsource/vazirmatn@5.2.8/400.min.css" rel="stylesheet">
+    <!-- <script src="/cdn/tailwindcss"></script>
+    <link href="/cdn/vazirmatn" rel="stylesheet">             uncomment this if proxy needed-->
     
     <style>
         body { font-family: 'Vazirmatn', sans-serif; }
@@ -46,6 +48,15 @@
         }
         .section-warning-badge.active {
             display: inline-block;
+        }
+        /* Progressive resume: a section already completed on a previous visit */
+        .section-done-badge {
+            background-color: #22c55e !important;
+            display: inline-block !important;
+        }
+        section.section-answered {
+            border-color: #bbf7d0;
+            background-color: #f6fef9;
         }
              
         .field-warning {

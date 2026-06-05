@@ -148,11 +148,14 @@ async def start_submission(
     if form is None:
         return {"error": "هیچ فرمی تعریف نشده است"}
 
-    # Reuse an open draft for this user if one exists, otherwise create one
+    # Progressive resume: reuse this patient's most recent submission for the
+    # form regardless of status, so a returning patient continues where they
+    # left off instead of starting an empty questionnaire. A completed
+    # submission is reopened to "draft" so the remaining sections can be filled.
     submission = db.query(models.Submission).filter(
         and_(
             models.Submission.user_id == user.user_id,
-            models.Submission.status == "draft",
+            models.Submission.form_id == form.form_id,
         )
     ).order_by(desc(models.Submission.created_at)).first()
 
@@ -161,9 +164,37 @@ async def start_submission(
             user_id=user.user_id, form_id=form.form_id, status="draft"
         )
         db.add(submission)
+    elif submission.status != "draft":
+        submission.status = "draft"
 
     db.commit()
     db.refresh(submission)
+
+    # Load any answers already saved for this submission so the UI can prefill
+    # the answered fields and mark their sections as done. Map each v_code to
+    # its section_key (via the question) for section-level progress.
+    saved_responses = db.query(models.Response).filter(
+        models.Response.submission_id == submission.submission_id
+    ).all()
+
+    section_key_by_qid = {}
+    if saved_responses:
+        section_by_id = {s.section_id: s.section_key for s in db.query(models.Section).all()}
+        for q in db.query(models.Question).all():
+            section_key_by_qid[q.question_id] = section_by_id.get(q.section_id)
+
+    answers = {}
+    confidence = {}
+    answered_sections = set()
+    for r in saved_responses:
+        if r.extracted_value is None:
+            continue
+        answers[r.v_code] = r.extracted_value
+        if r.ai_confidence is not None:
+            confidence[r.v_code] = r.ai_confidence
+        sk = section_key_by_qid.get(r.question_id)
+        if sk:
+            answered_sections.add(sk)
 
     return {
         "submission_id": str(submission.submission_id),
@@ -171,6 +202,9 @@ async def start_submission(
         "user_name": f"{user.first_name or ''} {user.last_name or ''}".strip(),
         "national_code": user.national_code,
         "status": submission.status,
+        "answers": answers,
+        "confidence": confidence,
+        "answered_sections": sorted(answered_sections),
     }
 
 

@@ -1,7 +1,10 @@
 import json
+import threading
+import time
 
 import httpx
 from google import genai
+from google.genai import errors
 from google.genai.types import (
     Part,
     HttpOptions,
@@ -11,12 +14,22 @@ from google.genai.types import (
 
 from app.core import config
 
+# HTTP status codes worth retrying on a different key / after a backoff:
+#   429 RESOURCE_EXHAUSTED  -> that key is out of quota / rate limited
+#   503 UNAVAILABLE         -> model overloaded ("high demand")
+#   500 INTERNAL            -> transient server error
+_QUOTA_CODE = 429
+_OVERLOAD_CODES = {500, 503}
+_RETRYABLE_CODES = {_QUOTA_CODE} | _OVERLOAD_CODES
 
-def _build_client():
+
+def _build_client(api_key=None):
     """Create a genai client wired through the optional outbound proxy.
 
     The proxy transport is built inline per call (cheap) and `attempts=1`
-    disables genai's internal retries, matching the original behavior.
+    disables genai's internal retries, so retry/failover is handled by
+    ``_run_with_failover`` instead. When ``api_key`` is None the client falls
+    back to its own GEMINI_API_KEY / GOOGLE_API_KEY environment lookup.
     """
     retry_config = HttpRetryOptions(attempts=1)
     proxy_url = config.get_proxy_url()
@@ -32,7 +45,112 @@ def _build_client():
             retry_options=retry_config,
             timeout=config.GENAI_TIMEOUT_MS,
         )
-    return genai.Client(http_options=http_config)
+    return genai.Client(api_key=api_key, http_options=http_config)
+
+
+class _KeyRotator:
+    """Thread-safe round-robin offset so load is spread across the keys."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._counter = 0
+
+    def order(self, n):
+        """Return key indices [0, n) starting at the next rotating offset."""
+        if n <= 0:
+            return []
+        with self._lock:
+            start = self._counter % n
+            self._counter = (self._counter + 1) % n
+        return [(start + i) % n for i in range(n)]
+
+
+_rotator = _KeyRotator()
+
+
+def _classify(err):
+    """Map an exception to a retry decision: ('quota'|'transient'|'fatal').
+
+    ``transient`` covers both server-side overload (503/500) and *transport*
+    failures — request timeouts and dropped connections. Those last two are NOT
+    ``APIError`` (they're ``httpx`` errors), so without handling them here a
+    proxy timeout or "Server disconnected" would skip failover entirely and
+    force the field worker to re-record. Treating them as transient lets us back
+    off and retry on another key, which is exactly the recovery we want.
+    """
+    if isinstance(err, errors.APIError):
+        code = getattr(err, "code", None)
+        if code == _QUOTA_CODE:
+            return "quota"
+        if code in _OVERLOAD_CODES:
+            return "transient"
+        return "fatal"
+    # Transport-level failures from httpx: timeouts, disconnects, connection
+    # resets. All worth retrying; none are quota.
+    if isinstance(err, (httpx.TimeoutException, httpx.TransportError)):
+        return "transient"
+    return "fatal"
+
+
+def _run_with_failover(call):
+    """Run ``call(client)`` against the configured API keys with retry.
+
+    Behavior (designed to never fire a request "for no reason"):
+      * On success, return immediately.
+      * On a fatal error (bad request, auth, etc.), raise immediately —
+        other keys are not burned.
+      * On quota (429), move on to the next key once; a key known to be out of
+        quota is not retried.
+      * On a transient failure (503/500 overload, or a timeout / dropped
+        connection), back off briefly and try the next key.
+      * After one pass over every key, if at least one key still has quota left
+        (i.e. the failures were transient, not quota), do a few extra bounded
+        retries with growing backoff. If every key is quota-exhausted, stop.
+    """
+    keys = config.get_api_keys()
+    if not keys:
+        # No explicit keys configured: single attempt, env-based client.
+        return call(_build_client(None))
+
+    n = len(keys)
+    order = _rotator.order(n)
+    last_err = None
+    quota_exhausted = set()
+
+    # Phase 1 — one shot per key, rotating offset spreads the load.
+    for idx in order:
+        try:
+            return call(_build_client(keys[idx]))
+        except Exception as e:
+            kind = _classify(e)
+            if kind == "fatal":
+                raise
+            last_err = e
+            if kind == "quota":
+                quota_exhausted.add(idx)
+                print(f"[ai_engine] key #{idx} out of quota; trying next key")
+            else:
+                print(f"[ai_engine] key #{idx} transient failure ({type(e).__name__}); backing off and rotating")
+                time.sleep(config.GENAI_RETRY_BACKOFF_SECONDS)
+
+    # Phase 2 — transient retries, only for keys that still have quota.
+    live = [keys[i] for i in range(n) if i not in quota_exhausted]
+    for attempt in range(config.GENAI_OVERLOAD_RETRIES):
+        if not live:
+            break
+        time.sleep(config.GENAI_RETRY_BACKOFF_SECONDS * (attempt + 2))
+        key = live[attempt % len(live)]
+        try:
+            return call(_build_client(key))
+        except Exception as e:
+            kind = _classify(e)
+            if kind == "fatal":
+                raise
+            last_err = e
+            if kind == "quota":
+                live = [k for k in live if k != key]
+
+    raise last_err
 
 
 class PromptGenerator:
@@ -75,14 +193,13 @@ class PromptGenerator:
             if hints:
                 prompt += (
                     "The extraction AI flagged the following fields with possible issues:\n"
-                    + "\n".join(hints) +
-                    "\nPay special attention to these fields for contradictions or inconsistencies.\n\n"
+                    + "\n".join(hints)
                 )
 
         # Final instructions
         prompt += (
             "Return a JSON array of warnings. Each warning must have: "
-            "'v_code' (the code of the suspicious field, or 'general' if it's a global issue), "
+            "'v_code' (the code of the suspicious field "
             "'message' (short explanation in Persian), and "
             "'severity' (either 'warning' or 'critical'). "
             "If everything looks consistent, return an empty array.\n"
@@ -102,17 +219,18 @@ class PromptGenerator:
             }
         }
 
-        client = _build_client()
+        def _call(client):
+            return client.models.generate_content(
+                model=config.ANOMALY_MODEL,
+                contents=[prompt],
+                config=GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=warning_schema,
+                    temperature=0.0,
+                ),
+            )
 
-        response = client.models.generate_content(
-            model=config.ANOMALY_MODEL,
-            contents=[prompt],
-            config=GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=warning_schema,
-                temperature=0.0,
-            ),
-        )
+        response = _run_with_failover(_call)
 
         print("\n=== ANOMALY RAW RESPONSE ===")
         print(response.text)
@@ -180,7 +298,28 @@ class PromptGenerator:
             q_text = q.question_text_fa or ""
             unit = q.unit or ""
 
-            if q_type in ("Categorical", "Dichotomous"):
+            if q_type == "MultiSelect":
+                if q.coding_options:
+                    try:
+                        opts = (
+                            json.loads(q.coding_options)
+                            if isinstance(q.coding_options, str)
+                            else q.coding_options
+                        )
+                    except Exception:
+                        opts = {}
+                    option_list = ", ".join(f"{k}={v}" for k, v in opts.items())
+                    rule = (
+                        f"Return ONLY a comma-separated list of the integer codes that are mentioned. "
+                        f"Options: {option_list}. If none mentioned, return null. Example: '1,3,5'."
+                    )
+                else:
+                    rule = "Return a comma-separated list of codes mentioned. If none, return null."
+                specs.append(
+                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}"
+                )
+
+            elif q_type in ("Categorical", "Dichotomous"):
                 if q.coding_options:
                     try:
                         opts = (
@@ -248,7 +387,6 @@ class PromptGenerator:
 
     @staticmethod
     def process_audio(audio_path, questions):
-        client = _build_client()
         model_name = config.AUDIO_MODEL
 
         prompt_text = PromptGenerator.generate_section_prompt(questions)
@@ -258,15 +396,18 @@ class PromptGenerator:
             audio_bytes = f.read()
         audio_part = Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[prompt_text, audio_part],
-            config=GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=schema,
-                temperature=0.0,
-            ),
-        )
+        def _call(client):
+            return client.models.generate_content(
+                model=model_name,
+                contents=[prompt_text, audio_part],
+                config=GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=schema,
+                    temperature=0.0,
+                ),
+            )
+
+        response = _run_with_failover(_call)
 
         print("\n=== RAW RESPONSE ===")
         print(response.text)
