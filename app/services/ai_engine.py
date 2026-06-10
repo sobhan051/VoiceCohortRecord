@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+import os
 
 import httpx
 from google import genai
@@ -387,18 +388,38 @@ class PromptGenerator:
 
     @staticmethod
     def process_audio(audio_path, questions):
-        model_name = config.AUDIO_MODEL
-
-        prompt_text = PromptGenerator.generate_section_prompt(questions)
-        schema = PromptGenerator._build_response_schema(questions)
-
+        """Process audio - supports WebM, M4A, OGG, and WAV formats."""
+        
+        # Determine MIME type from file extension
+        file_ext = os.path.splitext(audio_path)[1].lower()
+        
+        mime_type_map = {
+            '.webm': 'audio/webm',
+            '.m4a': 'audio/mp4',  # Gemini accepts audio/mp4 for M4A files
+            '.mp4': 'audio/mp4',
+            '.ogg': 'audio/ogg',
+            '.wav': 'audio/wav',
+            '.mp3': 'audio/mp3',
+        }
+        
+        mime_type = mime_type_map.get(file_ext, 'audio/wav')
+        
+        # For WebM files, Gemini 1.5+ supports them natively
+        # No conversion needed!
         with open(audio_path, "rb") as f:
             audio_bytes = f.read()
-        audio_part = Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
-
+        
+        # Log format for debugging
+        print(f"[ai_engine] Processing audio: {audio_path} ({mime_type}, size: {len(audio_bytes)} bytes)")
+        
+        audio_part = Part.from_bytes(data=audio_bytes, mime_type=mime_type)
+        
+        prompt_text = PromptGenerator.generate_section_prompt(questions)
+        schema = PromptGenerator._build_response_schema(questions)
+        
         def _call(client):
             return client.models.generate_content(
-                model=model_name,
+                model=config.AUDIO_MODEL,
                 contents=[prompt_text, audio_part],
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
@@ -406,11 +427,11 @@ class PromptGenerator:
                     temperature=0.0,
                 ),
             )
-
+        
         response = _run_with_failover(_call)
-
+        
         print("\n=== RAW RESPONSE ===")
-        print(response.text)
+        print(response.text[:500])  # Print first 500 chars
         print("=== END RAW ===\n")
-
+        
         return json.loads(response.text)

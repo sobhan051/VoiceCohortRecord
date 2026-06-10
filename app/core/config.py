@@ -35,7 +35,7 @@ GENAI_TIMEOUT_MS = int(os.getenv("GENAI_TIMEOUT_MS", "60000"))
 GENAI_RETRY_BACKOFF_SECONDS = float(os.getenv("GENAI_RETRY_BACKOFF_SECONDS", "1.5"))
 # Extra retries (beyond one shot per key) for transient overload, used only when
 # at least one key still has quota left.
-GENAI_OVERLOAD_RETRIES = int(os.getenv("GENAI_OVERLOAD_RETRIES", "2"))
+GENAI_OVERLOAD_RETRIES = int(os.getenv("GENAI_OVERLOAD_RETRIES", "1"))
 
 
 def get_proxy_url():
@@ -55,8 +55,6 @@ def get_api_keys():
     raw = (
         os.getenv("GEMINI_API_KEYS")
         or os.getenv("GEMINI_API_KEY")
-        or os.getenv("GOOGLE_API_KEY")
-        or ""
     )
     keys = []
     for part in raw.split(","):

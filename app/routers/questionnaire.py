@@ -267,16 +267,37 @@ async def process_voice(
     section_key: str = Form(...),
     audio: UploadFile = File(...),
     submission_id: str = Form(None),
+    audio_format: str = Form(None),
+    bitrate: str = Form(None),       
     db: Session = Depends(get_db)
 ):
-    # 1. Find section & questions
+    # Log the incoming format for debugging
+    print(f"📥 Received audio: {audio.filename}")
+    print(f"   Content-Type: {audio.content_type}")
+    print(f"   Format: {audio_format}")
+    print(f"   Bitrate: {bitrate}")
+    print(f"   Size: {audio.size / 1024:.2f} KB")
+    
+    # Supported audio formats
+    SUPPORTED_MIME_TYPES = {
+        'audio/webm': 'webm',
+        'audio/mp4': 'm4a',
+        'audio/ogg': 'ogg',
+        'audio/wav': 'wav',
+        'audio/mpeg': 'mp3',
+    }
+    
+    if audio.content_type not in SUPPORTED_MIME_TYPES:
+        return {"error": f"فرمت صوتی پشتیبانی نمی‌شود. فرمت‌های مجاز: WebM, M4A, OGG, WAV"}
+    
+    # Find section & questions
     section = db.query(models.Section).filter(
         models.Section.section_key == section_key
     ).first()
     if not section:
         return {"error": "سکشن مورد نظر یافت نشد"}
 
-    # Resolve the target submission (optional, but expected from the UI)
+    # Resolve the target submission
     sub_id = None
     if submission_id:
         try:
@@ -292,22 +313,23 @@ async def process_voice(
         models.Question.section_id == section.section_id
     ).all()
 
-    # 2. Save audio to disk
-    file_extension = audio.filename.split('.')[-1]
-    unique_filename = f"{uuid.uuid4()}.{file_extension}"
+    # Save audio with original extension
+    ext = SUPPORTED_MIME_TYPES[audio.content_type]
+    unique_filename = f"{uuid.uuid4()}.{ext}"
     file_path = os.path.join(UPLOAD_DIR, unique_filename)
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(audio.file, buffer)
 
     try:
+        # Process audio - no conversion needed for modern formats
         result = PromptGenerator.process_audio(file_path, questions)
 
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')
         confidence_map = result.get('confidence', {}) or {}
 
-        # 3. Save responses (one row per question, upserted)
+        # Save responses
         for v_code, val in extracted_data.items():
             if val is None:
                 continue
@@ -324,7 +346,6 @@ async def process_voice(
 
         db.commit()
 
-        # Return data plus additional AI insights
         return {
             "data": extracted_data,
             "confidence": result.get("confidence", {}),
@@ -336,7 +357,7 @@ async def process_voice(
         return {"error": str(e)}
 
     finally:
-        # 4. Clean up uploaded file
+        # Clean up uploaded file
         try:
             os.remove(file_path)
         except OSError:

@@ -9,7 +9,7 @@ let analyserNode = null;
 let silenceDetectionActive = false;
 
 const SILENCE_THRESHOLD = 0.01;
-const SILENCE_DURATION_MS = 4000;
+const SILENCE_DURATION_MS = 3500;
 const MIN_RECORDING_MS = 3000;
 let silenceStartTime = null;
 let recordingStartTime = null;
@@ -35,6 +35,49 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Require a patient before any recording can happen
     openPatientModal();
 });
+
+// Add this helper function at the top
+function getBestAudioMimeType() {
+    // Priority order with bitrate recommendations
+    const mimeTypes = [
+        { 
+            mime: 'audio/webm', 
+            label: 'webm',
+            bitrate: 32000,  // 32 kbps - optimal for speech
+            codec: 'opus'
+        },
+        { 
+            mime: 'audio/mp4', 
+            label: 'm4a',
+            bitrate: 64000,  // 64 kbps for AAC
+            codec: 'aac'
+        },
+        { 
+            mime: 'audio/ogg', 
+            label: 'ogg',
+            bitrate: 64000,  // 64 kbps for Vorbis
+            codec: 'vorbis'
+        },
+        { 
+            mime: 'audio/wav', 
+            label: 'wav',
+            bitrate: null,   // Uncompressed
+            codec: 'pcm'
+        }
+    ];
+    
+    for (const mt of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(mt.mime)) {
+            console.log(`✅ Using format: ${mt.mime} (${mt.codec} @ ${mt.bitrate ? mt.bitrate/1000 + 'kbps' : 'uncompressed'})`);
+            return mt;
+        }
+    }
+    
+    // Fallback to browser default
+    console.warn('No preferred format supported, using browser default');
+    return { mime: '', label: 'default', bitrate: null, codec: 'unknown' };
+}
+
 
 // ---------- Patient / Submission gate ----------
 function openPatientModal() {
@@ -274,13 +317,12 @@ function renderQuestion(q) {
     `;
 }
 
-// ---------- Recording Logic (auto‑stop + volume meter) unchanged ----------
+// Modified toggleRecording function with bitrate control
 async function toggleRecording(sectionKey) {
     const btn = document.getElementById(`btn-${sectionKey}`);
     const icon = document.getElementById(`icon-${sectionKey}`);
     const text = document.getElementById(`text-${sectionKey}`);
 
-    // Can't record without an open submission to attach answers to
     if (!recordingStates[sectionKey] && !currentSubmissionId) {
         openPatientModal();
         return;
@@ -289,20 +331,41 @@ async function toggleRecording(sectionKey) {
     if (!recordingStates[sectionKey]) {
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            mediaRecorder = new MediaRecorder(stream);
+            
+            // Get best supported format for this browser
+            const audioFormat = getBestAudioMimeType();
+            
+            // Create MediaRecorder with optimal settings
+            const options = {
+                mimeType: audioFormat.mime
+            };
+            
+            // Add bitrate for formats that support it
+            if (audioFormat.bitrate) {
+                options.audioBitsPerSecond = audioFormat.bitrate;
+                console.log(`🎚️ Setting bitrate: ${audioFormat.bitrate/1000}kbps`);
+            }
+            
+            mediaRecorder = new MediaRecorder(stream, options);
+            
+            // Store the format info for later
+            mediaRecorder.audioFormat = audioFormat;
             audioChunks = [];
 
             mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
             mediaRecorder.onstop = () => {
-                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                sendAudioToServer(sectionKey, audioBlob);
+                // Use the correct MIME type for the blob
+                const audioBlob = new Blob(audioChunks, { type: mediaRecorder.audioFormat.mime });
+                sendAudioToServer(sectionKey, audioBlob, mediaRecorder.audioFormat);
             };
 
-            mediaRecorder.start();
+            // Start recording with data collection every second
+            mediaRecorder.start(1000);
             recordingStartTime = Date.now();
             silenceStartTime = null;
             silenceDetectionActive = true;
 
+            // Volume meter setup (unchanged from your original)
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
             const source = audioContext.createMediaStreamSource(stream);
             analyserNode = audioContext.createAnalyser();
@@ -330,7 +393,6 @@ async function toggleRecording(sectionKey) {
                     else meterFill.style.backgroundColor = '#22c55e';
                 }
 
-                console.log('RMS:', rms.toFixed(4));
                 if (Date.now() - recordingStartTime < MIN_RECORDING_MS) return;
 
                 if (rms < SILENCE_THRESHOLD) {
@@ -379,20 +441,34 @@ async function toggleRecording(sectionKey) {
     }
 }
 
-// ---------- Server Communication with non‑blocking anomaly check ----------
-async function sendAudioToServer(sectionKey, blob) {
+// Modified sendAudioToServer to handle format info
+async function sendAudioToServer(sectionKey, blob, audioFormat) {
     // Hold onto the recording so any failure can be retried without re-recording.
-    if (blob) lastAudioBySection[sectionKey] = blob;
+    if (blob) {
+        lastAudioBySection[sectionKey] = blob;
+        lastAudioBySection[`${sectionKey}_format`] = audioFormat;
+    }
+    
     const audioBlob = blob || lastAudioBySection[sectionKey];
     if (!audioBlob) {
         alert("صدای ضبط‌شده‌ای برای ارسال یافت نشد. لطفا دوباره ضبط کنید.");
         return;
     }
 
+    const savedFormat = lastAudioBySection[`${sectionKey}_format`] || audioFormat || { label: 'webm', bitrate: 32000 };
+    
     const formData = new FormData();
-    formData.append("audio", audioBlob, "voice.wav");
+    // Use appropriate file extension based on format
+    const fileExtension = savedFormat.label === 'm4a' ? 'm4a' : savedFormat.label;
+    formData.append("audio", audioBlob, `voice.${fileExtension}`);
     formData.append("section_key", sectionKey);
+    formData.append("audio_format", savedFormat.label);  // Send format info to server
+    formData.append("bitrate", savedFormat.bitrate || '');  // Send bitrate for logging
+    
     if (currentSubmissionId) formData.append("submission_id", currentSubmissionId);
+
+    // Log the actual file size for debugging
+    console.log(`📤 Uploading ${savedFormat.label} (${savedFormat.bitrate ? savedFormat.bitrate/1000 + 'kbps' : 'uncompressed'}): ${(audioBlob.size/1024).toFixed(2)} KB`);
 
     try {
         const response = await fetch("/process-voice", { method: "POST", body: formData });
@@ -425,9 +501,12 @@ async function sendAudioToServer(sectionKey, blob) {
 
             updateQuestionVisibility();
             markSectionAnswered(sectionKey);
-            delete lastAudioBySection[sectionKey];  // succeeded – drop the held audio
+            
+            // Clear stored audio on success
+            delete lastAudioBySection[sectionKey];
+            delete lastAudioBySection[`${sectionKey}_format`];
 
-            // --- Anomaly check (non‑blocking) ---
+            // Anomaly check (non‑blocking)
             try {
                 const anomalyResp = await fetch("/check-section-anomalies", {
                     method: "POST",
@@ -440,7 +519,6 @@ async function sendAudioToServer(sectionKey, blob) {
                 });
                 const anomalyData = await anomalyResp.json();
                 if (!anomalyData.error && anomalyData.warnings && anomalyData.warnings.length > 0) {
-                    // Store warnings per field and update UI
                     anomalyData.warnings.forEach(w => {
                         if (!fieldWarnings[w.v_code]) {
                             fieldWarnings[w.v_code] = [];
