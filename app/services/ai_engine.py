@@ -161,7 +161,8 @@ class PromptGenerator:
         prompt = (
             "You are a medical quality control assistant. "
             "Review the following patient answers for clinical inconsistencies, "
-            "medically impossible values, contradictions, or suspicious combinations.\n\n"
+            "medically suspicious values, contradictions, or suspicious combinations. " 
+            "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that are clearly medically significant or potentially unsafe. \n\n"
         )
 
         # Append field descriptions
@@ -373,7 +374,7 @@ class PromptGenerator:
 
         prompt = (
             "You are a medical data entry assistant. "
-            "Analyze the audio transcript and extract answers according to the rules below.\n\n"
+            "Transcribe the audio in Farsi and analyze it and extract answers according to the rules below.\n\n"
             + "\n".join(specs)
             + "\n\n"
         )

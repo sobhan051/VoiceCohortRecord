@@ -76,8 +76,8 @@ async def check_section_anomalies(
     # Filter answers to only include the section’s v_codes + perhaps gender (A4) for cross‑consistency
     relevant_vcodes = {q.v_code for q in questions}
     # Add gender if present (to catch male + pregnancy)
-    if "A4" in answers:
-        relevant_vcodes.add("A4")
+    # if "A4" in answers:
+    #     relevant_vcodes.add("A4")
 
     filtered_answers = {v: answers[v] for v in relevant_vcodes if v in answers}
 
