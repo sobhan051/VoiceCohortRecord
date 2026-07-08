@@ -14,6 +14,13 @@ from sqlalchemy.orm import Session
 from app import models
 from app.db.session import get_db
 
+
+def _uuid(val: str):
+    try:
+        return UUID(val)
+    except ValueError:
+        return None
+
 router = APIRouter(prefix="/api/admin")
 
 
@@ -125,6 +132,7 @@ async def admin_submission_detail(
         ).first()
 
         responses_data.append({
+            "response_id": str(resp.response_id),
             "v_code": resp.v_code,
             "question_text": question.question_text_fa if question else "Unknown",
             "extracted_value": resp.extracted_value,
@@ -225,70 +233,302 @@ async def admin_delete_user(
         return {"error": str(e)}
 
 
-@router.get("/questions")
-async def admin_questions(db: Session = Depends(get_db)):
-    """Get all questions organized by section"""
-    sections = db.query(models.Section).order_by(models.Section.sort_order).all()
-
-    result = []
-    for section in sections:
-        questions = db.query(models.Question).filter(
-            models.Question.section_id == section.section_id
-        ).order_by(models.Question.sort_order).all()
-
-        result.append({
-            "section_id": str(section.section_id),
-            "section_key": section.section_key,
-            "section_name": section.name_fa,
-            "questions": [
-                {
-                    "question_id": str(q.question_id),
-                    "v_code": q.v_code,
-                    "question_text_fa": q.question_text_fa,
-                    "response_type": q.response_type,
-                    "coding_options": q.coding_options,
-                    "unit": q.unit,
-                    "sort_order": q.sort_order
-                }
-                for q in questions
-            ]
-        })
-
-    return result
+# ---------------------------------------------------------------------------
+# Forms CRUD
+# ---------------------------------------------------------------------------
 
 
-@router.put("/question/{question_id}")
-async def admin_update_question(
-    question_id: str,
-    question_data: dict,
-    db: Session = Depends(get_db)
-):
-    """Update a question"""
+@router.get("/forms")
+async def admin_forms(db: Session = Depends(get_db)):
+    """List all forms"""
+    forms = db.query(models.Form).order_by(models.Form.form_name).all()
+    return [
+        {
+            "form_id": str(f.form_id),
+            "form_name": f.form_name,
+            "category": f.category,
+        }
+        for f in forms
+    ]
 
+
+@router.post("/forms")
+async def admin_create_form(payload: dict, db: Session = Depends(get_db)):
+    """Create a form"""
     try:
-        qid = UUID(question_id)
-        question = db.query(models.Question).filter(models.Question.question_id == qid).first()
-
-        if not question:
-            return {"error": "Question not found"}
-
-        # Update fields
-        if "question_text_fa" in question_data:
-            question.question_text_fa = question_data["question_text_fa"]
-        if "response_type" in question_data:
-            question.response_type = question_data["response_type"]
-        if "coding_options" in question_data:
-            question.coding_options = question_data["coding_options"]
-        if "unit" in question_data:
-            question.unit = question_data["unit"]
-        if "sort_order" in question_data:
-            question.sort_order = question_data["sort_order"]
-
+        f = models.Form(
+            form_name=payload.get("form_name"),
+            category=payload.get("category"),
+        )
+        db.add(f)
         db.commit()
-
-        return {"success": True, "message": "Question updated successfully"}
+        db.refresh(f)
+        return {"success": True, "form_id": str(f.form_id)}
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.put("/forms/{form_id}")
+async def admin_update_form(form_id: str, payload: dict, db: Session = Depends(get_db)):
+    """Update a form"""
+    uid = _uuid(form_id)
+    if not uid:
+        return {"error": "Invalid form ID"}
+    f = db.query(models.Form).filter(models.Form.form_id == uid).first()
+    if not f:
+        return {"error": "Form not found"}
+    if "form_name" in payload:
+        f.form_name = payload["form_name"]
+    if "category" in payload:
+        f.category = payload["category"]
+    db.commit()
+    return {"success": True}
+
+
+@router.delete("/forms/{form_id}")
+async def admin_delete_form(form_id: str, db: Session = Depends(get_db)):
+    """Delete a form and its sections and questions"""
+    uid = _uuid(form_id)
+    if not uid:
+        return {"error": "Invalid form ID"}
+    f = db.query(models.Form).filter(models.Form.form_id == uid).first()
+    if not f:
+        return {"error": "Form not found"}
+    # Cascade delete: sections -> questions
+    sections = db.query(models.Section).filter(models.Section.form_id == uid).all()
+    for s in sections:
+        db.query(models.Question).filter(models.Question.section_id == s.section_id).delete()
+        db.delete(s)
+    db.delete(f)
+    db.commit()
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Sections CRUD (scoped under a form)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/forms/{form_id}/sections")
+async def admin_form_sections(form_id: str, db: Session = Depends(get_db)):
+    """Get all sections for a form"""
+    uid = _uuid(form_id)
+    if not uid:
+        return {"error": "Invalid form ID"}
+    sections = db.query(models.Section).filter(
+        models.Section.form_id == uid
+    ).order_by(models.Section.sort_order).all()
+    return [
+        {
+            "section_id": str(s.section_id),
+            "form_id": str(s.form_id),
+            "section_key": s.section_key,
+            "name_fa": s.name_fa,
+            "sort_order": s.sort_order,
+            "depends_on_vcode": s.depends_on_vcode,
+            "depends_on_value": s.depends_on_value,
+            "skip_if_vcode": s.skip_if_vcode,
+            "skip_if_value": s.skip_if_value,
+        }
+        for s in sections
+    ]
+
+
+@router.post("/sections")
+async def admin_create_section(payload: dict, db: Session = Depends(get_db)):
+    """Create a section"""
+    try:
+        s = models.Section(
+            form_id=_uuid(payload.get("form_id")),
+            section_key=payload.get("section_key"),
+            name_fa=payload.get("name_fa"),
+            sort_order=payload.get("sort_order", 0),
+            depends_on_vcode=payload.get("depends_on_vcode"),
+            depends_on_value=payload.get("depends_on_value"),
+            skip_if_vcode=payload.get("skip_if_vcode"),
+            skip_if_value=payload.get("skip_if_value"),
+        )
+        db.add(s)
+        db.commit()
+        db.refresh(s)
+        return {"success": True, "section_id": str(s.section_id)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.put("/sections/{section_id}")
+async def admin_update_section(section_id: str, payload: dict, db: Session = Depends(get_db)):
+    """Update a section"""
+    uid = _uuid(section_id)
+    if not uid:
+        return {"error": "Invalid section ID"}
+    s = db.query(models.Section).filter(models.Section.section_id == uid).first()
+    if not s:
+        return {"error": "Section not found"}
+    for field in ("section_key", "name_fa", "sort_order",
+                  "depends_on_vcode", "depends_on_value",
+                  "skip_if_vcode", "skip_if_value"):
+        if field in payload:
+            setattr(s, field, payload[field])
+    if "form_id" in payload:
+        s.form_id = _uuid(payload["form_id"])
+    db.commit()
+    return {"success": True}
+
+
+@router.delete("/sections/{section_id}")
+async def admin_delete_section(section_id: str, db: Session = Depends(get_db)):
+    """Delete a section and its questions"""
+    uid = _uuid(section_id)
+    if not uid:
+        return {"error": "Invalid section ID"}
+    s = db.query(models.Section).filter(models.Section.section_id == uid).first()
+    if not s:
+        return {"error": "Section not found"}
+    db.query(models.Question).filter(models.Question.section_id == uid).delete()
+    db.delete(s)
+    db.commit()
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Questions CRUD (scoped under a section)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/sections/{section_id}/questions")
+async def admin_section_questions(section_id: str, db: Session = Depends(get_db)):
+    """Get all questions for a section"""
+    uid = _uuid(section_id)
+    if not uid:
+        return {"error": "Invalid section ID"}
+    questions = db.query(models.Question).filter(
+        models.Question.section_id == uid
+    ).order_by(models.Question.sort_order).all()
+    return [
+        {
+            "question_id": str(q.question_id),
+            "section_id": str(q.section_id),
+            "v_code": q.v_code,
+            "variable_name": q.variable_name,
+            "question_text_fa": q.question_text_fa,
+            "response_type": q.response_type,
+            "coding_options": q.coding_options,
+            "unit": q.unit,
+            "manual_prompt": q.manual_prompt,
+            "sort_order": q.sort_order,
+        }
+        for q in questions
+    ]
+
+
+@router.post("/questions")
+async def admin_create_question(payload: dict, db: Session = Depends(get_db)):
+    """Create a question"""
+    try:
+        q = models.Question(
+            section_id=_uuid(payload.get("section_id")),
+            v_code=payload.get("v_code"),
+            variable_name=payload.get("variable_name"),
+            question_text_fa=payload.get("question_text_fa"),
+            response_type=payload.get("response_type"),
+            coding_options=payload.get("coding_options"),
+            unit=payload.get("unit"),
+            manual_prompt=payload.get("manual_prompt"),
+            sort_order=payload.get("sort_order", 0),
+        )
+        db.add(q)
+        db.commit()
+        db.refresh(q)
+        return {"success": True, "question_id": str(q.question_id)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@router.put("/questions/{question_id}")
+async def admin_update_question(question_id: str, payload: dict, db: Session = Depends(get_db)):
+    """Update a question"""
+    uid = _uuid(question_id)
+    if not uid:
+        return {"error": "Invalid question ID"}
+    q = db.query(models.Question).filter(models.Question.question_id == uid).first()
+    if not q:
+        return {"error": "Question not found"}
+    for field in ("v_code", "variable_name", "question_text_fa", "response_type",
+                  "coding_options", "unit", "manual_prompt", "sort_order"):
+        if field in payload:
+            setattr(q, field, payload[field])
+    if "section_id" in payload:
+        q.section_id = _uuid(payload["section_id"])
+    db.commit()
+    return {"success": True}
+
+
+@router.delete("/questions/{question_id}")
+async def admin_delete_question(question_id: str, db: Session = Depends(get_db)):
+    """Delete a question"""
+    uid = _uuid(question_id)
+    if not uid:
+        return {"error": "Invalid question ID"}
+    q = db.query(models.Question).filter(models.Question.question_id == uid).first()
+    if not q:
+        return {"error": "Question not found"}
+    db.delete(q)
+    db.commit()
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Users – add update
+# ---------------------------------------------------------------------------
+
+
+@router.put("/users/{user_id}")
+async def admin_update_user(user_id: str, payload: dict, db: Session = Depends(get_db)):
+    """Update a user"""
+    uid = _uuid(user_id)
+    if not uid:
+        return {"error": "Invalid user ID"}
+    u = db.query(models.User).filter(models.User.user_id == uid).first()
+    if not u:
+        return {"error": "User not found"}
+    for field in ("first_name", "last_name", "national_code", "phone_number", "role"):
+        if field in payload:
+            setattr(u, field, payload[field])
+    db.commit()
+    return {"success": True}
+
+
+@router.delete("/submissions/{submission_id}")
+async def admin_delete_submission(submission_id: str, db: Session = Depends(get_db)):
+    """Delete a submission and its responses"""
+    uid = _uuid(submission_id)
+    if not uid:
+        return {"error": "Invalid submission ID"}
+    sub = db.query(models.Submission).filter(models.Submission.submission_id == uid).first()
+    if not sub:
+        return {"error": "Submission not found"}
+    # Delete associated responses first
+    db.query(models.Response).filter(models.Response.submission_id == uid).delete()
+    # Delete associated API logs
+    db.query(models.ApiLog).filter(models.ApiLog.submission_id == uid).delete()
+    db.delete(sub)
+    db.commit()
+    return {"success": True}
+
+
+@router.delete("/responses/{response_id}")
+async def admin_delete_response(response_id: str, db: Session = Depends(get_db)):
+    """Delete a single response"""
+    uid = _uuid(response_id)
+    if not uid:
+        return {"error": "Invalid response ID"}
+    r = db.query(models.Response).filter(models.Response.response_id == uid).first()
+    if not r:
+        return {"error": "Response not found"}
+    db.delete(r)
+    db.commit()
+    return {"success": True}
 
 
 @router.get("/api-logs")

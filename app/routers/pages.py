@@ -10,13 +10,14 @@ router = APIRouter()
 
 @router.get("/")
 async def read_index():
+    """Serve the dashboard page (login + role-based dashboard)"""
+    return FileResponse(str(STATIC_DIR / "dashboard.html"))
+
+
+@router.get("/form")
+async def questionnaire():
+    """Serve the questionnaire form page"""
     return FileResponse(str(STATIC_DIR / "index.html"))
-
-
-@router.get("/admin")
-async def admin_panel():
-    """Serve admin panel HTML"""
-    return FileResponse(str(STATIC_DIR / "admin.html"))
 
 
 @router.get("/cdn/tailwindcss")

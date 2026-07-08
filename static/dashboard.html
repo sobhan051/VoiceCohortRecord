@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>داشبورد - VCR</title>
+    <script src="/cdn/tailwindcss"></script>
+    <link href="/cdn/vazirmatn" rel="stylesheet">
+    <style>
+        body { font-family: 'Vazirmatn', sans-serif; }
+        .sidebar-item {
+            transition: all 0.3s ease;
+        }
+        .sidebar-item:hover {
+            background-color: #f3f4f6;
+            transform: translateX(-5px);
+        }
+        .sidebar-item.active {
+            background-color: #3b82f6;
+            color: white;
+        }
+        .stat-card {
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.02);
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <!-- Login Modal -->
+    <div id="login-modal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 m-4">
+            <div class="text-center mb-8">
+                <h1 class="text-3xl font-bold text-blue-600">پروژه VCR</h1>
+                <p class="text-sm text-gray-400 mt-1">سیستم استخراج داده‌های کوهرت با هوش مصنوعی</p>
+            </div>
+            <h2 class="text-xl font-bold text-gray-800 mb-2">ورود به داشبورد</h2>
+            <p class="text-sm text-gray-400 mb-6">کد ملی خود را وارد کنید</p>
+            <div class="space-y-4">
+                <input id="login-national" type="text" placeholder="کد ملی"
+                       class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 transition-all">
+                <p id="login-error" class="text-sm text-red-500 hidden"></p>
+                <button onclick="handleLogin()" id="login-btn"
+                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl transition-all">
+                    ورود
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Dashboard Layout -->
+    <div id="dashboard-app" class="hidden">
+        <!-- User Dashboard -->
+        <div id="user-dashboard" class="hidden">
+            <header class="bg-white shadow-sm border-b border-gray-100">
+                <div class="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
+                    <div>
+                        <h1 class="text-2xl font-bold text-blue-600">پروژه VCR</h1>
+                        <p class="text-xs text-gray-400">داشبورد کاربری</p>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <span id="user-info" class="text-sm text-gray-600 font-medium"></span>
+                        <button onclick="handleLogout()" class="text-sm text-red-500 hover:text-red-600 font-medium">خروج</button>
+                    </div>
+                </div>
+            </header>
+            <main class="max-w-5xl mx-auto px-4 py-8">
+                <div id="user-content"></div>
+            </main>
+        </div>
+
+        <!-- Admin Dashboard -->
+        <div id="admin-dashboard" class="hidden flex h-screen">
+            <!-- Sidebar (first child = right side in RTL) -->
+            <aside class="w-80 bg-white shadow-lg flex flex-col">
+                <div class="p-6 border-b">
+                    <h1 class="text-2xl font-bold text-blue-600">پنل مدیریت</h1>
+                    <p class="text-xs text-gray-400 mt-1">سیستم کوهرت VCR</p>
+                </div>
+                <nav class="flex-1 p-4 space-y-2">
+                    <a href="#" onclick="showAdminSection('dashboard'); return false;" class="sidebar-item active block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="dashboard">
+                        <span class="ml-3">📊</span> داشبورد
+                    </a>
+                    <a href="#" onclick="showAdminSection('submissions'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="submissions">
+                        <span class="ml-3">📋</span> پرسشنامه‌ها
+                    </a>
+                    <a href="#" onclick="showAdminSection('users'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="users">
+                        <span class="ml-3">👥</span> کاربران
+                    </a>
+                    <a href="#" onclick="showAdminSection('forms'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="forms">
+                        <span class="ml-3">📋</span> مدیریت فرم‌ها
+                    </a>
+                    <a href="#" onclick="showAdminSection('api-logs'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="api-logs">
+                        <span class="ml-3">🤖</span> لاگ‌های هوش مصنوعی
+                    </a>
+                    <a href="#" onclick="showAdminSection('settings'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="settings">
+                        <span class="ml-3">⚙️</span> تنظیمات
+                    </a>
+                </nav>
+                <div class="p-4 border-t">
+                    <a href="/form" class="block px-4 py-3 rounded-xl text-gray-600 hover:bg-gray-100 transition">
+                        <span class="ml-3">📝</span> پرسشنامه صوتی
+                    </a>
+                </div>
+            </aside>
+
+            <!-- Main Content Area -->
+            <main class="flex-1 overflow-y-auto">
+                <!-- Header -->
+                <header class="bg-white shadow-sm border-b border-gray-100 px-6 py-4 flex items-center justify-between">
+                    <div>
+                        <h1 class="text-2xl font-bold text-blue-600">پنل مدیریت</h1>
+                        <p class="text-xs text-gray-400">سیستم کوهرت VCR</p>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <span id="admin-user-info" class="text-sm text-gray-600 font-medium"></span>
+                        <button onclick="handleLogout()" class="text-sm text-red-500 hover:text-red-600 font-medium">خروج</button>
+                    </div>
+                </header>
+                <div id="admin-content" class="p-8"></div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Submission Detail Modal -->
+    <div id="submission-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeSubmissionModal()">
+        <div class="bg-white rounded-2xl max-w-4xl w-full max-h-[80vh] overflow-y-auto m-4" onclick="event.stopPropagation()">
+            <div class="sticky top-0 bg-white border-b p-4 flex justify-between items-center">
+                <h3 class="text-xl font-bold">جزئیات پرسشنامه</h3>
+                <button onclick="closeSubmissionModal()" class="text-gray-500 hover:text-gray-700">✕</button>
+            </div>
+            <div id="submission-detail" class="p-6"></div>
+        </div>
+    </div>
+
+    <!-- Add/Edit User Modal -->
+    <div id="add-user-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeAddUserModal()">
+        <div class="bg-white rounded-2xl max-w-md w-full m-4" onclick="event.stopPropagation()">
+            <div class="p-6">
+                <h3 id="user-modal-title" class="text-xl font-bold mb-4">افزودن کاربر جدید</h3>
+                <form id="add-user-form" class="space-y-4">
+                    <input type="hidden" id="edit-user-id" value="">
+                    <div>
+                        <label class="block text-sm font-bold mb-2">کد ملی</label>
+                        <input type="text" id="user-national" name="national_code" required class="w-full border rounded-xl p-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">نام</label>
+                        <input type="text" id="user-first" name="first_name" class="w-full border rounded-xl p-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">نام خانوادگی</label>
+                        <input type="text" id="user-last" name="last_name" class="w-full border rounded-xl p-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">شماره تماس</label>
+                        <input type="text" id="user-phone" name="phone_number" class="w-full border rounded-xl p-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">نقش</label>
+                        <select id="user-role" name="role" class="w-full border rounded-xl p-2">
+                            <option value="1">کاربر</option>
+                            <option value="2">مدیر</option>
+                        </select>
+                    </div>
+                    <div class="flex gap-4">
+                        <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded-xl">ذخیره</button>
+                        <button type="button" onclick="closeAddUserModal()" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-xl">انصراف</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Form Modal -->
+    <div id="form-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeFormModal()">
+        <div class="bg-white rounded-2xl max-w-md w-full m-4" onclick="event.stopPropagation()">
+            <div class="p-6">
+                <h3 id="form-modal-title" class="text-xl font-bold mb-4">افزودن فرم جدید</h3>
+                <form id="form-form" class="space-y-4">
+                    <input type="hidden" id="edit-form-id" value="">
+                    <div>
+                        <label class="block text-sm font-bold mb-2">نام فرم</label>
+                        <input type="text" id="form-name" required class="w-full border rounded-xl p-2">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">دسته</label>
+                        <input type="text" id="form-category" class="w-full border rounded-xl p-2">
+                    </div>
+                    <div class="flex gap-4">
+                        <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded-xl">ذخیره</button>
+                        <button type="button" onclick="closeFormModal()" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-xl">انصراف</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Section Modal -->
+    <div id="section-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeSectionModal()">
+        <div class="bg-white rounded-2xl max-w-lg w-full m-4 max-h-[85vh] overflow-y-auto" onclick="event.stopPropagation()">
+            <div class="p-6">
+                <h3 id="section-modal-title" class="text-xl font-bold mb-4">افزودن بخش جدید</h3>
+                <form id="section-form" class="space-y-4">
+                    <input type="hidden" id="edit-section-id" value="">
+                    <div>
+                        <label class="block text-sm font-bold mb-2">متعلق به فرم</label>
+                        <select id="section-form-id" class="w-full border rounded-xl p-2" required>
+                            <option value="">انتخاب فرم...</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">کلید بخش (section_key)</label>
+                        <input type="text" id="section-key" required class="w-full border rounded-xl p-2" placeholder="مثال: A">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">نام فارسی</label>
+                        <input type="text" id="section-name" required class="w-full border rounded-xl p-2" placeholder="مثال: اطلاعات جمعیت‌شناختی">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">ترتیب</label>
+                        <input type="number" id="section-order" class="w-full border rounded-xl p-2" value="0">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">وابسته به (depends_on_vcode)</label>
+                        <input type="text" id="section-dep-vcode" class="w-full border rounded-xl p-2" placeholder="اختیاری">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">مقدار وابستگی (depends_on_value)</label>
+                        <input type="text" id="section-dep-value" class="w-full border rounded-xl p-2" placeholder="اختیاری">
+                    </div>
+                    <div class="flex gap-4">
+                        <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded-xl">ذخیره</button>
+                        <button type="button" onclick="closeSectionModal()" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-xl">انصراف</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Question Modal -->
+    <div id="question-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeQuestionModal()">
+        <div class="bg-white rounded-2xl max-w-lg w-full m-4 max-h-[85vh] overflow-y-auto" onclick="event.stopPropagation()">
+            <div class="p-6">
+                <h3 id="question-modal-title" class="text-xl font-bold mb-4">افزودن سوال جدید</h3>
+                <form id="question-form" class="space-y-4">
+                    <input type="hidden" id="edit-question-id" value="">
+                    <div>
+                        <label class="block text-sm font-bold mb-2">متعلق به بخش</label>
+                        <select id="question-section-id" class="w-full border rounded-xl p-2" required>
+                            <option value="">انتخاب بخش...</option>
+                        </select>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-bold mb-2">کد سوال (v_code)</label>
+                            <input type="text" id="q-vcode" required class="w-full border rounded-xl p-2" placeholder="مثال: A1">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-bold mb-2">نام متغیر</label>
+                            <input type="text" id="q-varname" class="w-full border rounded-xl p-2">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">متن سوال (فارسی)</label>
+                        <textarea id="q-text" required class="w-full border rounded-xl p-2" rows="2"></textarea>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-bold mb-2">نوع پاسخ</label>
+                            <select id="q-type" class="w-full border rounded-xl p-2">
+                                <option value="Text">متن</option>
+                                <option value="Numeric">عددی</option>
+                                <option value="Continuous">پیوسته</option>
+                                <option value="Categorical">دسته‌ای</option>
+                                <option value="Dichotomous">دوگانه</option>
+                                <option value="Date">تاریخ</option>
+                                <option value="MultiSelect">چند انتخابی</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-bold mb-2">واحد</label>
+                            <input type="text" id="q-unit" class="w-full border rounded-xl p-2" placeholder="اختیاری">
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">گزینه‌ها (JSON) — برای Categorical/Dichotomous/MultiSelect</label>
+                        <textarea id="q-options" class="w-full border rounded-xl p-2 font-mono text-sm" rows="3" placeholder='{"1": "گزینه 1", "2": "گزینه 2"}'></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">پرامپت دستی (اختیاری)</label>
+                        <textarea id="q-prompt" class="w-full border rounded-xl p-2" rows="2" placeholder="دستورالعمل اختصاصی برای هوش مصنوعی"></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-bold mb-2">ترتیب</label>
+                        <input type="number" id="q-order" class="w-full border rounded-xl p-2" value="0">
+                    </div>
+                    <div class="flex gap-4">
+                        <button type="submit" class="flex-1 bg-blue-600 text-white py-2 rounded-xl">ذخیره</button>
+                        <button type="button" onclick="closeQuestionModal()" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-xl">انصراف</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/dashboard.js"></script>
+</body>
+</html>
