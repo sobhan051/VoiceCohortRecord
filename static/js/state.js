@@ -22,4 +22,5 @@ export const state = {
     fieldWarnings: {},            // { v_code: [ { message, severity } ] }
     currentSubmissionId: null,    // set once a patient/submission is started
     lastAudioBySection: {},       // { section_key: Blob } – kept so a failed send can be retried
+    sectionProgressData: {},      // { section_key: { name_fa, total, answered } } – progress panel data
 };

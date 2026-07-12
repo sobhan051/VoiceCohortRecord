@@ -5,9 +5,8 @@ import { state } from './state.js';
 import { SILENCE_THRESHOLD, SILENCE_DURATION_MS, MIN_RECORDING_MS } from './config.js';
 import { getBestAudioMimeType, processRecordedAudio } from './audio.js';
 import { processVoice, checkSectionAnomalies } from './api.js';
-import { applyAiResults, updateQuestionVisibility, markSectionAnswered, resetButtonUI } from './render.js';
+import { applyAiResults, updateQuestionVisibility, markSectionAnswered, resetButtonUI, updateProgressPanel } from './render.js';
 import { applyFieldWarnings, updateSectionBadges, updateWarningPanel } from './warnings.js';
-import { openPatientModal } from './patient.js';
 
 // ---------- Floating Stop Button & Volume Meter ----------
 export function showFloatingStopButton() {
@@ -35,7 +34,9 @@ export async function toggleRecording(sectionKey) {
     const text = document.getElementById(`text-${sectionKey}`);
 
     if (!state.recordingStates[sectionKey] && !state.currentSubmissionId) {
-        openPatientModal();
+        // No active session — redirect to dashboard
+        alert('لطفاً ابتدا از داشبورد وارد شوید.');
+        window.location.href = '/';
         return;
     }
 
@@ -214,6 +215,7 @@ export async function sendAudioToServer(sectionKey, blob, audioFormat) {
 
             updateQuestionVisibility();
             markSectionAnswered(sectionKey);
+            updateProgressPanel();
 
             // Clear stored audio on success
             delete state.lastAudioBySection[sectionKey];

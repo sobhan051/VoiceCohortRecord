@@ -1,42 +1,50 @@
-// patient.js – the patient/submission gate: identify a patient, open a draft
-// submission, and progressively resume any answers they already gave.
+// patient.js – the patient/submission gate: read session from dashboard,
+// auto-start a draft submission, and progressively resume any existing answers.
 
 import { state } from './state.js';
 import * as api from './api.js';
-import { applyAiResults, updateQuestionVisibility, markSectionAnswered } from './render.js';
-
-export function openPatientModal() {
-    document.getElementById('pt-error').classList.add('hidden');
-    document.getElementById('patient-modal').classList.remove('hidden');
-}
+import { applyAiResults, updateQuestionVisibility, markSectionAnswered, updateProgressPanel } from './render.js';
 
 export function changePatient() {
-    // Start a fresh questionnaire for a different patient
-    window.location.reload();
+    // Redirect to dashboard to pick a different user
+    window.location.href = '/';
 }
 
-export async function startSubmission() {
+export async function autoStartFromSession() {
     const errEl = document.getElementById('pt-error');
-    const btn = document.getElementById('pt-submit');
-    const national = document.getElementById('pt-national').value.trim();
-
-    if (!national) {
-        errEl.textContent = 'کد ملی الزامی است.';
+    
+    // Read user session from localStorage (set by dashboard on login)
+    const saved = localStorage.getItem('vcr_user');
+    if (!saved) {
+        errEl.textContent = 'نشست کاربری یافت نشد. لطفاً ابتدا از داشبورد وارد شوید.';
         errEl.classList.remove('hidden');
+        setTimeout(() => { window.location.href = '/'; }, 3000);
         return;
     }
 
-    btn.disabled = true;
-    btn.textContent = 'در حال شروع...';
+    let userData;
     try {
-        const data = await api.startSubmission({
-            user: {
-                first_name: document.getElementById('pt-first').value.trim(),
-                last_name: document.getElementById('pt-last').value.trim(),
-                national_code: national,
-                phone_number: document.getElementById('pt-phone').value.trim(),
-            }
-        });
+        userData = JSON.parse(saved);
+    } catch {
+        errEl.textContent = 'اطلاعات نشست نامعتبر است. لطفاً دوباره وارد شوید.';
+        errEl.classList.remove('hidden');
+        localStorage.removeItem('vcr_user');
+        setTimeout(() => { window.location.href = '/'; }, 3000);
+        return;
+    }
+
+    // Pre-fill the patient card with user data
+    document.getElementById('pt-first').value = userData.first_name || '';
+    document.getElementById('pt-last').value = userData.last_name || '';
+    document.getElementById('pt-national').value = userData.national_code || '';
+    document.getElementById('pt-phone').value = userData.phone_number || '';
+    
+    // Show the patient card
+    document.getElementById('patient-card').classList.remove('hidden');
+
+    // Auto-start submission using the user_id from session
+    try {
+        const data = await api.startSubmission({ user_id: userData.user_id });
         if (data.error) {
             errEl.textContent = data.error;
             errEl.classList.remove('hidden');
@@ -44,23 +52,22 @@ export async function startSubmission() {
         }
 
         state.currentSubmissionId = data.submission_id;
-        document.getElementById('patient-modal').classList.add('hidden');
-        const bar = document.getElementById('patient-bar');
-        bar.classList.remove('hidden');
         const name = data.user_name || 'بیمار';
-        document.getElementById('patient-bar-name').textContent =
-            `${name} — کد ملی ${data.national_code}`;
+
+        // Update badge text
+        const subtitle = document.getElementById('patient-card-subtitle');
+        if (subtitle) {
+            subtitle.textContent =
+                `بیمار: ${name} — شروع شده در ${new Date().toLocaleDateString('fa-IR')}`;
+        }
 
         // Progressive resume: prefill any sections this patient already answered
-        // and mark them done, so they only need to complete the rest.
         loadExistingProgress(data);
+        updateProgressPanel();
     } catch (err) {
         console.error('start-submission failed:', err);
         errEl.textContent = 'ارتباط با سرور با مشکل مواجه شد.';
         errEl.classList.remove('hidden');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'شروع';
     }
 }
 

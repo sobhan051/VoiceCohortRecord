@@ -9,3 +9,4 @@ knowledge.md
 *.pyc
 __pycache__/
 .claude/
+temp*.*

@@ -12,6 +12,159 @@
     
     <style>
         body { font-family: 'Vazirmatn', sans-serif; }
+
+        /* Fixed right-side progress panel */
+        #progress-panel {
+            position: fixed;
+            top: 80px;
+            right: 0;
+            width: 250px;
+            height: calc(100vh - 80px);
+            background: white;
+            border-right: 1px solid #e5e7eb;
+            box-shadow: 4px 0 12px rgba(0,0,0,0.05);
+            z-index: 40;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+            transition: transform 0.3s ease;
+        }
+        #progress-panel .panel-header {
+            padding: 16px;
+            border-bottom: 1px solid #f3f4f6;
+            background: #fafbfc;
+        }
+        #progress-panel .panel-body {
+            flex: 1;
+            padding: 8px;
+            overflow-y: auto;
+        }
+        #progress-panel .panel-footer {
+            padding: 12px;
+            border-top: 1px solid #f3f4f6;
+            background: #fafbfc;
+        }
+        .progress-section-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 12px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-bottom: 2px;
+        }
+        .progress-section-item:hover {
+            background: #f0f4ff;
+            transform: translateX(3px);
+        }
+        .progress-section-item .sec-name {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #374151;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 110px;
+        }
+        .progress-section-item .sec-count {
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 2px 10px;
+            border-radius: 999px;
+            min-width: 48px;
+            text-align: center;
+        }
+        .sec-count.complete {
+            background: #d1fae5;
+            color: #059669;
+        }
+        .sec-count.partial {
+            background: #fef3c7;
+            color: #d97706;
+        }
+        .sec-count.empty {
+            background: #f3f4f6;
+            color: #9ca3af;
+        }
+        .progress-bar-track {
+            width: 100%;
+            height: 4px;
+            background: #f3f4f6;
+            border-radius: 999px;
+            margin-top: 6px;
+            overflow: hidden;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            border-radius: 999px;
+            transition: width 0.4s ease;
+        }
+        .pb-complete { background: #10b981; }
+        .pb-partial { background: #f59e0b; }
+        .pb-empty { background: #d1d5db; }
+
+        /* Overall progress ring */
+        .overall-progress {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 4px 0;
+        }
+        .overall-ring {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 800;
+            color: white;
+            flex-shrink: 0;
+        }
+
+        /* Responsive: hide panel on small screens, show toggle */
+        #progress-panel-toggle {
+            display: none;
+            position: fixed;
+            top: 72px;
+            right: 0;
+            z-index: 45;
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-right: none;
+            border-radius: 12px 0 0 12px;
+            padding: 8px 6px;
+            cursor: pointer;
+            box-shadow: -2px 2px 8px rgba(0,0,0,0.08);
+        }
+        @media (max-width: 1024px) {
+            #progress-panel {
+                transform: translateX(100%);
+            }
+            #progress-panel.open {
+                transform: translateX(0);
+            }
+            #progress-panel-toggle {
+                display: flex;
+            }
+        }
+
+        /* Keep form centered; margin-right makes room for the panel on the right */
+        @media (min-width: 1025px) {
+            main {
+                max-width: 56rem;
+                margin: 0 auto;
+                margin-right: 270px;
+                padding: 32px 24px;
+            }
+        }
+
+        /* Scroll offset so sticky header doesn't hide section tops */
+        section[id^="sect-"] {
+            scroll-margin-top: 80px;
+        }
         .ai-updated {
             animation: aiPulse 2s ease-out forwards;
             border-radius: 8px;
@@ -71,15 +224,15 @@
         label.field-critical {
             border-color: #ef4444 !important;
         }
-        /* Fixed warning summary panel */
+        /* Fixed warning summary panel — left side, below header */
         #warning-summary-panel {
             position: fixed;
-            bottom: 24px;
+            top: 80px;
             left: 24px;
             z-index: 40;
             display: flex;
             flex-direction: column;
-            align-items: flex-end;
+            align-items: flex-start;
             gap: 8px;
         }
         #warning-toggle-btn {
@@ -139,14 +292,91 @@
         </div>
     </header>
 
-    <main class="max-w-4xl mx-auto px-4 py-8">
-        <!-- Active patient bar (shown once a submission is started) -->
-        <div id="patient-bar" class="hidden mb-6 bg-white rounded-2xl shadow-sm border border-gray-100 px-5 py-4 flex items-center justify-between">
-            <div>
-                <p class="text-xs text-gray-400">در حال ثبت برای</p>
-                <p id="patient-bar-name" class="font-bold text-gray-800"></p>
+    <!-- Progress Panel Toggle (visible on mobile) -->
+    <button id="progress-panel-toggle" onclick="toggleProgressPanel()">
+        <svg class="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+        </svg>
+    </button>
+
+    <!-- Fixed right-side progress panel -->
+    <div id="progress-panel">
+        <div class="panel-header">
+            <div class="flex items-center justify-between">
+                <h3 class="text-sm font-bold text-gray-700">پیشرفت ثبت</h3>
+                <button onclick="toggleProgressPanel()" class="text-gray-400 hover:text-gray-600 transition lg:hidden">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
             </div>
-            <button onclick="changePatient()" class="text-sm text-blue-600 hover:text-blue-700 font-medium">تغییر بیمار</button>
+            <div class="overall-progress mt-3">
+                <div id="overall-ring" class="overall-ring bg-gray-300">0%</div>
+                <div class="flex-1 min-w-0">
+                    <p class="text-xs text-gray-500">پیشرفت کلی</p>
+                    <div class="progress-bar-track">
+                        <div id="overall-bar-fill" class="progress-bar-fill" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="progress-section-list" class="panel-body">
+            <!-- Populated by JavaScript -->
+            <div class="text-center py-8 text-gray-400 text-xs">در حال بارگذاری...</div>
+        </div>
+        <div class="panel-footer">
+            <button onclick="submitFinalForm()" id="panel-submit-btn"
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-xl transition-all text-sm shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed">
+                <span class="flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    </svg>
+                    ذخیره و ثبت نهایی
+                </span>
+            </button>
+        </div>
+    </div>
+
+    <main class="px-4 py-8">
+        <!-- Patient info card (pre-filled from dashboard session, fields are readonly) -->
+        <div id="patient-card" class="hidden mb-6 bg-white rounded-3xl shadow-sm border border-gray-100 p-6">
+            <div class="flex items-center gap-3 mb-5 pb-4 border-b border-gray-50">
+                <div class="bg-blue-100 p-2.5 rounded-full">
+                    <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+                    </svg>
+                </div>
+                <div>
+                    <h2 class="text-lg font-bold text-gray-800">اطلاعات بیمار</h2>
+                    <p class="text-sm text-gray-400" id="patient-card-subtitle">بیمار انتخاب شده برای ثبت پرسشنامه</p>
+                </div>
+                <div class="mr-auto">
+                    <span id="patient-card-badge" class="bg-green-100 text-green-700 text-xs font-bold px-3 py-1.5 rounded-full">✓ احراز هویت شده</span>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-xs text-gray-400 font-bold mb-1.5">نام</label>
+                    <input id="pt-first" type="text" readonly
+                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 text-gray-700 select-none cursor-default">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 font-bold mb-1.5">نام خانوادگی</label>
+                    <input id="pt-last" type="text" readonly
+                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 text-gray-700 select-none cursor-default">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 font-bold mb-1.5">کد ملی</label>
+                    <input id="pt-national" type="text" readonly
+                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 text-gray-700 select-none cursor-default font-mono">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-400 font-bold mb-1.5">شماره تماس</label>
+                    <input id="pt-phone" type="text" readonly
+                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 text-gray-700 select-none cursor-default">
+                </div>
+            </div>
+            <p id="pt-error" class="text-sm text-red-500 hidden mt-4"></p>
         </div>
 
         <div id="form-container" class="space-y-10">
@@ -157,51 +387,21 @@
             </div>
         </div>
 
-        <div class="mt-12 mb-20 text-center">
-            <button onclick="submitFinalForm()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-12 rounded-2xl shadow-lg transition-all text-xl">
-                تایید نهایی و ثبت پرسشنامه
-            </button>
-        </div>
     </main>
 
-    <!-- Patient gate: choose/create a respondent before recording -->
-    <div id="patient-modal" class="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center px-4 hidden">
-        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
-            <h2 class="text-xl font-bold text-gray-800 mb-1">شروع پرسشنامه جدید</h2>
-            <p class="text-sm text-gray-400 mb-6">اطلاعات بیمار را وارد کنید تا پاسخ‌ها به پرونده او ثبت شود.</p>
-            <div class="space-y-4">
-                <div class="grid grid-cols-2 gap-4">
-                    <input id="pt-first" type="text" placeholder="نام"
-                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500">
-                    <input id="pt-last" type="text" placeholder="نام خانوادگی"
-                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500">
-                </div>
-                <input id="pt-national" type="text" placeholder="کد ملی (الزامی)"
-                       class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500">
-                <input id="pt-phone" type="text" placeholder="شماره تماس"
-                       class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500">
-                <p id="pt-error" class="text-sm text-red-500 hidden"></p>
-                <button onclick="startSubmission()" id="pt-submit"
-                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl transition-all">
-                    شروع
-                </button>
-            </div>
-        </div>
-    </div>
 
-
-    <!-- Floating Stop Button (hidden by default) -->
+    <!-- Floating Stop Button (hidden by default) — original compact size -->
     <button id="floating-stop-btn" 
-            class="fixed bottom-8 right-8 z-50 w-16 h-16 bg-red-500 text-white rounded-full shadow-2xl hidden items-center justify-center hover:bg-red-600 transition-all mic-recording"
+            class="fixed bottom-8 left-8 z-50 w-12 h-12 bg-red-500 text-white rounded-full shadow-xl hidden items-center justify-center hover:bg-red-600 transition-all mic-recording"
             onclick="stopRecordingViaFab()">
-        <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24">
+        <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
             <rect x="6" y="6" width="12" height="12" rx="2" />
         </svg>
     </button>
     <!-- Volume Meter Container (hidden by default, appears while recording) -->
-    <div id="volume-meter-container" class="fixed bottom-8 right-28 z-50 hidden flex-col items-center gap-1">
+    <div id="volume-meter-container" class="fixed bottom-8 left-24 z-50 hidden flex-col items-center gap-1">
         <span class="text-xs text-gray-400">میزان صدا</span>
-        <div class="w-3 h-24 bg-gray-200 rounded-full overflow-hidden relative">
+        <div class="w-2 h-16 bg-gray-200 rounded-full overflow-hidden relative">
             <div id="volume-meter-fill" class="absolute bottom-0 w-full bg-green-500 rounded-full transition-all duration-75"
                 style="height: 0%;"></div>
         </div>
@@ -214,6 +414,6 @@
         <div id="warning-list"></div>
     </div>
     <!-- Load all JavaScript from external file -->
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2"></script>
 </body>
 </html> 

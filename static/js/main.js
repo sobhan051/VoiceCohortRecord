@@ -4,10 +4,10 @@
 
 import { state } from './state.js';
 import * as api from './api.js';
-import { renderForm, updateQuestionVisibility } from './render.js';
+import { renderForm, updateQuestionVisibility, updateProgressPanel, scrollToSection, toggleProgressPanel } from './render.js';
 import { applyFieldWarnings, updateSectionBadges, updateWarningPanel, toggleWarningPanel } from './warnings.js';
 import { toggleRecording, stopRecordingViaFab } from './recorder.js';
-import { openPatientModal, changePatient, startSubmission } from './patient.js';
+import { changePatient, autoStartFromSession } from './patient.js';
 
 document.addEventListener('DOMContentLoaded', async () => {
     try {
@@ -19,8 +19,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('form-container').innerHTML =
             `<div class="bg-red-50 text-red-600 p-4 rounded-xl border border-red-200">خطا در دریافت اطلاعات از سرور. لطفا اتصال دیتابیس را بررسی کنید.</div>`;
     }
-    // Require a patient before any recording can happen
-    openPatientModal();
+    // Auto-start from dashboard session
+    autoStartFromSession();
 });
 
 // ---------- Manual Input Listener (clears field warnings on change) ----------
@@ -48,11 +48,12 @@ document.addEventListener('change', function (event) {
     updateWarningPanel();
 
     updateQuestionVisibility();
+    updateProgressPanel();
 });
 
 async function submitFinalForm() {
     if (!state.currentSubmissionId) {
-        openPatientModal();
+        alert('هنوز نشست پرسشنامه شروع نشده است. لطفاً صفحه را مجدداً بارگذاری کنید.');
         return;
     }
 
@@ -88,6 +89,7 @@ async function submitFinalForm() {
 window.toggleRecording = toggleRecording;
 window.stopRecordingViaFab = stopRecordingViaFab;
 window.changePatient = changePatient;
-window.startSubmission = startSubmission;
 window.toggleWarningPanel = toggleWarningPanel;
 window.submitFinalForm = submitFinalForm;
+window.scrollToSection = scrollToSection;
+window.toggleProgressPanel = toggleProgressPanel;

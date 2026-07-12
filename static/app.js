@@ -20,6 +20,7 @@ let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_
 let fieldWarnings = {};           // { v_code: [ { message, severity } ] }
 let currentSubmissionId = null;   // set once a patient/submission is started
 let lastAudioBySection = {};      // { section_key: Blob } – kept so a failed send can be retried without re-recording
+let sectionProgressData = {};     // { section_key: { name_fa, total, answered } } – for the progress panel
 
 document.addEventListener('DOMContentLoaded', async () => {
     try {
@@ -32,8 +33,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('form-container').innerHTML =
             `<div class="bg-red-50 text-red-600 p-4 rounded-xl border border-red-200">خطا در دریافت اطلاعات از سرور. لطفا اتصال دیتابیس را بررسی کنید.</div>`;
     }
-    // Require a patient before any recording can happen
-    openPatientModal();
+    // Auto-start from dashboard session
+    autoStartFromSession();
 });
 
 // Add this helper function at the top
@@ -79,42 +80,50 @@ function getBestAudioMimeType() {
 }
 
 
-// ---------- Patient / Submission gate ----------
-function openPatientModal() {
-    document.getElementById('pt-error').classList.add('hidden');
-    document.getElementById('patient-modal').classList.remove('hidden');
-}
-
+// ---------- Session-based Patient / Submission gate ----------
 function changePatient() {
-    // Start a fresh questionnaire for a different patient
-    window.location.reload();
+    // Redirect to dashboard to pick a different user
+    window.location.href = '/';
 }
 
-async function startSubmission() {
+async function autoStartFromSession() {
     const errEl = document.getElementById('pt-error');
-    const btn = document.getElementById('pt-submit');
-    const national = document.getElementById('pt-national').value.trim();
-
-    if (!national) {
-        errEl.textContent = 'کد ملی الزامی است.';
+    
+    // Read user session from localStorage (set by dashboard on login)
+    const saved = localStorage.getItem('vcr_user');
+    if (!saved) {
+        errEl.textContent = 'نشست کاربری یافت نشد. لطفاً ابتدا از داشبورد وارد شوید.';
         errEl.classList.remove('hidden');
+        setTimeout(() => { window.location.href = '/'; }, 3000);
         return;
     }
 
-    btn.disabled = true;
-    btn.textContent = 'در حال شروع...';
+    let userData;
+    try {
+        userData = JSON.parse(saved);
+    } catch {
+        errEl.textContent = 'اطلاعات نشست نامعتبر است. لطفاً دوباره وارد شوید.';
+        errEl.classList.remove('hidden');
+        localStorage.removeItem('vcr_user');
+        setTimeout(() => { window.location.href = '/'; }, 3000);
+        return;
+    }
+
+    // Pre-fill the patient card with user data
+    document.getElementById('pt-first').value = userData.first_name || '';
+    document.getElementById('pt-last').value = userData.last_name || '';
+    document.getElementById('pt-national').value = userData.national_code || '';
+    document.getElementById('pt-phone').value = userData.phone_number || '';
+    
+    // Show the patient card
+    document.getElementById('patient-card').classList.remove('hidden');
+
+    // Auto-start submission using the user_id from session
     try {
         const res = await fetch('/start-submission', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                user: {
-                    first_name: document.getElementById('pt-first').value.trim(),
-                    last_name: document.getElementById('pt-last').value.trim(),
-                    national_code: national,
-                    phone_number: document.getElementById('pt-phone').value.trim(),
-                }
-            })
+            body: JSON.stringify({ user_id: userData.user_id })
         });
         const data = await res.json();
         if (data.error) {
@@ -124,23 +133,19 @@ async function startSubmission() {
         }
 
         currentSubmissionId = data.submission_id;
-        document.getElementById('patient-modal').classList.add('hidden');
-        const bar = document.getElementById('patient-bar');
-        bar.classList.remove('hidden');
         const name = data.user_name || 'بیمار';
-        document.getElementById('patient-bar-name').textContent =
-            `${name} — کد ملی ${data.national_code}`;
+
+        // Update badge text
+        document.getElementById('patient-card-subtitle').textContent =
+            `بیمار: ${name} — شروع شده در ${new Date().toLocaleDateString('fa-IR')}`;
 
         // Progressive resume: prefill any sections this patient already answered
-        // and mark them done, so they only need to complete the rest.
         loadExistingProgress(data);
+        updateProgressPanel();
     } catch (err) {
         console.error('start-submission failed:', err);
         errEl.textContent = 'ارتباط با سرور با مشکل مواجه شد.';
         errEl.classList.remove('hidden');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'شروع';
     }
 }
 
@@ -232,10 +237,17 @@ function renderForm(sections) {
     const container = document.getElementById('form-container');
     container.innerHTML = '';
 
+    // Build section progress data
+    sectionProgressData = {};
     sections.forEach(section => {
         sectionMetaMap[section.section_key] = {
             depends_on_vcode: section.depends_on_vcode || null,
             depends_on_value: section.depends_on_value || null
+        };
+        sectionProgressData[section.section_key] = {
+            name_fa: section.name_fa,
+            total: section.questions ? section.questions.length : 0,
+            answered: 0
         };
 
         const sectHtml = `
@@ -264,6 +276,141 @@ function renderForm(sections) {
         `;
         container.insertAdjacentHTML('beforeend', sectHtml);
     });
+}
+
+// ---------- Progress Panel ----------
+function updateProgressPanel() {
+    // Count answered questions per visible section (unique vcode per question)
+    const visibleSections = document.querySelectorAll('section[id^="sect-"]:not([style*="display: none"])');
+    visibleSections.forEach(sectionEl => {
+        const sectionKey = sectionEl.id.replace('sect-', '');
+        if (!sectionProgressData[sectionKey]) return;
+        let answered = 0;
+        const countedVcodes = new Set();
+        sectionEl.querySelectorAll('[data-vcode]').forEach(input => {
+            const vcode = input.dataset.vcode;
+            if (!vcode || countedVcodes.has(vcode)) return;
+            countedVcodes.add(vcode);
+            if (input.type === 'checkbox') {
+                const checked = sectionEl.querySelectorAll(
+                    `input[type="checkbox"][data-vcode="${vcode}"]:checked`
+                );
+                if (checked.length > 0) answered++;
+            } else if (input.type === 'radio') {
+                const checked = sectionEl.querySelector(
+                    `input[type="radio"][data-vcode="${vcode}"]:checked`
+                );
+                if (checked) answered++;
+            } else if (input.value && input.value.trim() !== '') {
+                answered++;
+            }
+        });
+        sectionProgressData[sectionKey].answered = answered;
+    });
+
+    // Build the list HTML
+    const listEl = document.getElementById('progress-section-list');
+    let totalAnswered = 0;
+    let totalQuestions = 0;
+    let html = '';
+
+    Object.entries(sectionProgressData).forEach(([key, data]) => {
+        // Skip sections that are currently hidden
+        const sectionEl = document.getElementById(`sect-${key}`);
+        const isVisible = !sectionEl || sectionEl.style.display !== 'none';
+        if (!isVisible) return;
+
+        totalAnswered += data.answered;
+        totalQuestions += data.total;
+
+        const pct = data.total > 0 ? Math.round((data.answered / data.total) * 100) : 0;
+        let countClass = 'empty';
+        let barClass = 'pb-empty';
+        if (data.answered === data.total && data.total > 0) {
+            countClass = 'complete';
+            barClass = 'pb-complete';
+        } else if (data.answered > 0) {
+            countClass = 'partial';
+            barClass = 'pb-partial';
+        }
+
+        html += `
+            <div class="progress-section-item" onclick="scrollToSection('${key}')">
+                <span class="sec-name" title="${data.name_fa}">${data.name_fa}</span>
+                <span class="sec-count ${countClass}" dir="ltr">${data.answered} / ${data.total}</span>
+            </div>
+            <div class="px-3 pb-1">
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill ${barClass}" style="width: ${pct}%"></div>
+                </div>
+            </div>`;
+    });
+
+    if (!html) {
+        html = '<div class="text-center py-8 text-gray-400 text-xs">هیچ قسمتی نمایش داده نشده است</div>';
+    }
+    listEl.innerHTML = html;
+
+    // Update overall progress
+    const overallPct = totalQuestions > 0 ? Math.round((totalAnswered / totalQuestions) * 100) : 0;
+    const ringEl = document.getElementById('overall-ring');
+    const barFillEl = document.getElementById('overall-bar-fill');
+    if (ringEl) {
+        ringEl.textContent = overallPct + '%';
+        ringEl.className = 'overall-ring ' + (
+            overallPct === 100 ? 'bg-green-500' :
+            overallPct > 0 ? 'bg-amber-500' :
+            'bg-gray-300'
+        );
+    }
+    if (barFillEl) {
+        barFillEl.style.width = overallPct + '%';
+        barFillEl.className = 'progress-bar-fill ' + (
+            overallPct === 100 ? 'pb-complete' :
+            overallPct > 0 ? 'pb-partial' :
+            'pb-empty'
+        );
+    }
+
+    // Update submit button state
+    const submitBtn = document.getElementById('panel-submit-btn');
+    if (submitBtn) {
+        submitBtn.disabled = totalAnswered === 0;
+        submitBtn.textContent = totalAnswered === 0 ? 'هیچ پاسخی ثبت نشده' : `ثبت نهایی (${totalAnswered})`;
+        // Re-wrap with icon
+        if (totalAnswered > 0) {
+            submitBtn.innerHTML = `<span class="flex items-center justify-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                </svg>
+                ثبت نهایی
+            </span>`;
+        }
+    }
+
+    // Update status badge in header
+    const badgeEl = document.getElementById('status-badge');
+    if (badgeEl && totalQuestions > 0) {
+        if (overallPct === 100) {
+            badgeEl.textContent = '✅ همه بخش‌ها تکمیل شد';
+            badgeEl.className = 'bg-green-50 text-green-600 px-4 py-2 rounded-full text-sm font-medium';
+        } else {
+            badgeEl.textContent = `📊 ${totalAnswered} از ${totalQuestions}`;
+            badgeEl.className = 'bg-blue-50 text-blue-600 px-4 py-2 rounded-full text-sm font-medium';
+        }
+    }
+}
+
+function scrollToSection(sectionKey) {
+    const el = document.getElementById(`sect-${sectionKey}`);
+    if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+}
+
+function toggleProgressPanel() {
+    const panel = document.getElementById('progress-panel');
+    panel.classList.toggle('open');
 }
 
 function renderQuestion(q) {
@@ -324,7 +471,9 @@ async function toggleRecording(sectionKey) {
     const text = document.getElementById(`text-${sectionKey}`);
 
     if (!recordingStates[sectionKey] && !currentSubmissionId) {
-        openPatientModal();
+        // No active session — redirect to dashboard
+        alert('لطفاً ابتدا از داشبورد وارد شوید.');
+        window.location.href = '/';
         return;
     }
 
@@ -501,6 +650,7 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
 
             updateQuestionVisibility();
             markSectionAnswered(sectionKey);
+            updateProgressPanel();
             
             // Clear stored audio on success
             delete lastAudioBySection[sectionKey];
@@ -717,11 +867,12 @@ document.addEventListener('change', function(event) {
     updateWarningPanel();
 
     updateQuestionVisibility();
+    updateProgressPanel();
 });
 
 async function submitFinalForm() {
     if (!currentSubmissionId) {
-        openPatientModal();
+        alert('هنوز نشست پرسشنامه شروع نشده است. لطفاً صفحه را مجدداً بارگذاری کنید.');
         return;
     }
 
