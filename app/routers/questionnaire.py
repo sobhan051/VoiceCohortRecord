@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from uuid import UUID
 
+from app.services.audio_processor import process_audio_file
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy import and_, desc
 from sqlalchemy.orm import Session
@@ -321,9 +322,13 @@ async def process_voice(
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(audio.file, buffer)
 
+    # Server-side: trim silence + normalize loudness via ffmpeg, then archive
+    # both the original and processed clips for testing. (Cleanup + opus->wav
+    # switch can be added once testing is done.)
+    processed_path = process_audio_file(file_path)
+
     try:
-        # Process audio - no conversion needed for modern formats
-        result = PromptGenerator.process_audio(file_path, questions)
+        result = PromptGenerator.process_audio(processed_path, questions)
 
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')
@@ -356,9 +361,5 @@ async def process_voice(
         print(f"CRITICAL ERROR: {str(e)}")
         return {"error": str(e)}
 
-    finally:
-        # Clean up uploaded file
-        try:
-            os.remove(file_path)
-        except OSError:
-            pass
+    # Archive for testing: original + processed clips are kept in UPLOAD_DIR.
+    # Re-enable cleanup here once testing is complete.
