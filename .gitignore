@@ -1,7 +1,6 @@
 .env
 .env.*
 venv/
-*.sql
 uploads/
 CLAUDE.md
 knowledge.md
