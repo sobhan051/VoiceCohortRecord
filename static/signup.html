@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ثبت‌نام - VCR</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link href="https://cdn.jsdelivr.net/npm/@fontsource/vazirmatn@5.2.8/400.min.css" rel="stylesheet">
+    <style>
+        body { font-family: 'Vazirmatn', sans-serif; }
+        .field-label { display: block; font-size: 0.8rem; font-weight: 700; color: #4b5563; margin-bottom: 0.4rem; }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 antialiased min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white rounded-3xl shadow-xl w-full max-w-md p-8">
+        <div class="text-center mb-8">
+            <div class="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/>
+                </svg>
+            </div>
+            <h1 class="text-2xl font-bold text-blue-600">پروژه VCR</h1>
+            <p class="text-sm text-gray-400 mt-1">ساخت حساب کاربری برای ثبت پرسشنامه</p>
+        </div>
+
+        <h2 class="text-xl font-bold text-gray-800 mb-1">ثبت‌نام</h2>
+        <p class="text-sm text-gray-400 mb-6">اطلاعات زیر را وارد کنید</p>
+
+        <form id="signup-form" class="space-y-4" novalidate>
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label for="signup-first" class="field-label">نام</label>
+                    <input id="signup-first" type="text" placeholder="نام"
+                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 focus:bg-white transition-all">
+                </div>
+                <div>
+                    <label for="signup-last" class="field-label">نام خانوادگی</label>
+                    <input id="signup-last" type="text" placeholder="نام خانوادگی"
+                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 focus:bg-white transition-all">
+                </div>
+            </div>
+            <div>
+                <label for="signup-national" class="field-label">کد ملی <span class="text-red-500">*</span></label>
+                <input id="signup-national" type="text" inputmode="numeric" maxlength="10" placeholder="کد ملی (۱۰ رقم)"
+                       class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 focus:bg-white transition-all font-mono" dir="ltr">
+            </div>
+            <div>
+                <label for="signup-phone" class="field-label">شماره تماس</label>
+                <input id="signup-phone" type="tel" inputmode="numeric" maxlength="11" placeholder="۰۹۱۲۳۴۵۶۷۸۹"
+                       class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 focus:bg-white transition-all font-mono" dir="ltr">
+            </div>
+
+            <p id="signup-error" class="text-sm text-red-500 hidden"></p>
+
+            <button type="submit" id="signup-btn"
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                ثبت‌نام
+            </button>
+        </form>
+
+        <p class="text-center text-sm text-gray-400 mt-6">
+            قبلاً حساب دارید؟
+            <a href="/" class="text-blue-600 hover:text-blue-700 font-bold">ورود</a>
+        </p>
+    </div>
+
+    <script src="/static/signup.js"></script>
+</body>
+</html>

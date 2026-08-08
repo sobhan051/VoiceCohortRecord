@@ -1,11 +1,7 @@
 .env
-.env.*
 venv/
 uploads/
-CLAUDE.md
-knowledge.md
-.agents/
 *.pyc
 __pycache__/
-.claude/
-temp*.*
+.pytest_cache/
+

@@ -30,30 +30,48 @@
         }
     </style>
 </head>
-<body class="bg-gray-100">
-    <!-- Login Modal -->
-    <div id="login-modal" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 m-4">
+<body class="bg-gray-50 text-gray-800 antialiased">
+    <!-- Login Page -->
+    <div id="login-page" class="min-h-screen flex items-center justify-center p-4">
+        <div class="bg-white rounded-3xl shadow-xl w-full max-w-md p-8">
             <div class="text-center mb-8">
-                <h1 class="text-3xl font-bold text-blue-600">پروژه VCR</h1>
+                <div class="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+                    <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+                    </svg>
+                </div>
+                <h1 class="text-2xl font-bold text-blue-600">پروژه VCR</h1>
                 <p class="text-sm text-gray-400 mt-1">سیستم استخراج داده‌های کوهرت با هوش مصنوعی</p>
             </div>
-            <h2 class="text-xl font-bold text-gray-800 mb-2">ورود به داشبورد</h2>
+
+            <h2 class="text-xl font-bold text-gray-800 mb-1">ورود به داشبورد</h2>
             <p class="text-sm text-gray-400 mb-6">کد ملی خود را وارد کنید</p>
-            <div class="space-y-4">
-                <input id="login-national" type="text" placeholder="کد ملی"
-                       class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 transition-all">
+
+            <form id="login-form" class="space-y-4" novalidate>
+                <div>
+                    <label for="login-national" class="block text-xs font-bold text-gray-500 mb-1.5">کد ملی</label>
+                    <input id="login-national" type="text" inputmode="numeric" maxlength="10" placeholder="کد ملی (۱۰ رقم)"
+                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 focus:bg-white transition-all font-mono" dir="ltr">
+                </div>
                 <p id="login-error" class="text-sm text-red-500 hidden"></p>
-                <button onclick="handleLogin()" id="login-btn"
-                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl transition-all">
+                <button type="submit" id="login-btn"
+                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl transition-all disabled:opacity-50 disabled:cursor-not-allowed">
                     ورود
                 </button>
-            </div>
+            </form>
+
+            <p class="text-center text-sm text-gray-400 mt-6">
+                حساب ندارید؟
+                <a href="/signup" class="text-blue-600 hover:text-blue-700 font-bold">ثبت‌نام</a>
+            </p>
         </div>
     </div>
 
     <!-- Main Dashboard Layout -->
     <div id="dashboard-app" class="hidden">
+        <!-- Dashboard root shown after login -->
+        <div id="dashboard-root" class="hidden">
+        </div>
         <!-- User Dashboard -->
         <div id="user-dashboard" class="hidden">
             <header class="bg-white shadow-sm border-b border-gray-100">

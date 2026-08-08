@@ -20,6 +20,12 @@ async def questionnaire():
     return FileResponse(str(STATIC_DIR / "index.html"))
 
 
+@router.get("/signup")
+async def signup_page():
+    """Serve the signup page"""
+    return FileResponse(str(STATIC_DIR / "signup.html"))
+
+
 @router.get("/cdn/tailwindcss")
 async def tailwind_css():
     """Proxy cdn.tailwindcss.com through the server."""

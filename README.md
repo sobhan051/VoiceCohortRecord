@@ -1,11 +1,11 @@
 # TODO
 - [x] PWA
 - [x] audio process retry & R-R
-- [ ] fix ui when asking to resend the audio (timeout)
+- [x] fix ui when asking to resend the audio (timeout)
 - [ ] save audio in database
-- [ ] audio cleaning / filtering
-- [ ] improve prompts
-- [ ] fix questions loading 
+- [x] audio cleaning / filtering
+- [x] improve prompts
+- [x] fix questions loading 
 
 # VCR — Voice Cohort Record
 

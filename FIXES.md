@@ -1,5 +1,6 @@
 - [ ] Update Qestions texts
 - [ ] Reduce the number of Questions in chronic disease section
-- [ ] Find proxy for Gemini
+- [x] Find proxy for Gemini (WebShare)
 - [ ] Fix(finetune) audio processing configs if needed 
 - [ ] change the bitrate to 64K if needed 
+- [ ] pill names more than one fix (داروهای مصرفی)

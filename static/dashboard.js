@@ -4,14 +4,47 @@ let currentUser = null;
 let adminSection = 'dashboard';
 
 // ---------- Login ----------
+function showLoginError(msg) {
+    const errEl = document.getElementById('login-error');
+    if (!errEl) return;
+    errEl.textContent = msg;
+    errEl.classList.remove('hidden');
+}
+
+function clearLoginError() {
+    const errEl = document.getElementById('login-error');
+    if (errEl) errEl.classList.add('hidden');
+}
+
+function showLoginPage() {
+    document.getElementById('login-page').classList.remove('hidden');
+    document.getElementById('dashboard-app').classList.add('hidden');
+}
+
+function enterDashboard(user) {
+    document.getElementById('login-page').classList.add('hidden');
+    document.getElementById('dashboard-app').classList.remove('hidden');
+
+    if (user.role === 2) {
+        document.getElementById('admin-dashboard').classList.remove('hidden');
+        document.getElementById('admin-user-info').textContent =
+            `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.national_code;
+        showAdminSection('dashboard');
+    } else {
+        document.getElementById('user-dashboard').classList.remove('hidden');
+        document.getElementById('user-info').textContent =
+            `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.national_code;
+        loadUserDashboard();
+    }
+}
+
 async function handleLogin() {
     const errEl = document.getElementById('login-error');
     const btn = document.getElementById('login-btn');
     const national = document.getElementById('login-national').value.trim();
 
     if (!national) {
-        errEl.textContent = 'کد ملی الزامی است.';
-        errEl.classList.remove('hidden');
+        showLoginError('کد ملی الزامی است.');
         return;
     }
 
@@ -26,33 +59,17 @@ async function handleLogin() {
         const data = await res.json();
 
         if (data.error) {
-            errEl.textContent = data.error;
-            errEl.classList.remove('hidden');
+            showLoginError(data.error);
             return;
         }
 
         currentUser = data.user;
         // Persist session in localStorage so it survives page reload / server restart
         localStorage.setItem('vcr_user', JSON.stringify(currentUser));
-
-        document.getElementById('login-modal').classList.add('hidden');
-        document.getElementById('dashboard-app').classList.remove('hidden');
-
-        if (currentUser.role === 2) {
-            document.getElementById('admin-dashboard').classList.remove('hidden');
-            document.getElementById('admin-user-info').textContent =
-                `${currentUser.first_name || ''} ${currentUser.last_name || ''}`.trim() || currentUser.national_code;
-            showAdminSection('dashboard');
-        } else {
-            document.getElementById('user-dashboard').classList.remove('hidden');
-            document.getElementById('user-info').textContent =
-                `${currentUser.first_name || ''} ${currentUser.last_name || ''}`.trim() || currentUser.national_code;
-            loadUserDashboard();
-        }
+        enterDashboard(currentUser);
     } catch (err) {
         console.error('Login failed:', err);
-        errEl.textContent = 'ارتباط با سرور با مشکل مواجه شد.';
-        errEl.classList.remove('hidden');
+        showLoginError('ارتباط با سرور با مشکل مواجه شد.');
     } finally {
         btn.disabled = false;
         btn.textContent = 'ورود';
@@ -66,14 +83,15 @@ function handleLogout() {
     document.getElementById('dashboard-app').classList.add('hidden');
     document.getElementById('user-dashboard').classList.add('hidden');
     document.getElementById('admin-dashboard').classList.add('hidden');
-    document.getElementById('login-modal').classList.remove('hidden');
+    showLoginPage();
     document.getElementById('login-national').value = '';
-    document.getElementById('login-error').classList.add('hidden');
+    clearLoginError();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('login-national').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') handleLogin();
+    document.getElementById('login-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        handleLogin();
     });
 
     // Auto-restore session from localStorage
@@ -107,20 +125,7 @@ async function tryRestoreSession() {
         // Session is valid — restore and update localStorage with fresh data
         currentUser = data.user;
         localStorage.setItem('vcr_user', JSON.stringify(currentUser));
-        document.getElementById('login-modal').classList.add('hidden');
-        document.getElementById('dashboard-app').classList.remove('hidden');
-
-        if (currentUser.role === 2) {
-            document.getElementById('admin-dashboard').classList.remove('hidden');
-            document.getElementById('admin-user-info').textContent =
-                `${currentUser.first_name || ''} ${currentUser.last_name || ''}`.trim() || currentUser.national_code;
-            showAdminSection('dashboard');
-        } else {
-            document.getElementById('user-dashboard').classList.remove('hidden');
-            document.getElementById('user-info').textContent =
-                `${currentUser.first_name || ''} ${currentUser.last_name || ''}`.trim() || currentUser.national_code;
-            loadUserDashboard();
-        }
+        enterDashboard(currentUser);
     } catch (err) {
         // Network error (server restart, temporary outage) — keep the saved session
         // so it works on next page refresh when the server is back up.

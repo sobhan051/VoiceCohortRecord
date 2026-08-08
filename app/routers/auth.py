@@ -3,6 +3,7 @@
 Simple login via national_code (no password — the User model has none).
 Dashboard data differs per role (1=user, 2=admin).
 """
+import re
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -13,6 +14,52 @@ from app import models
 from app.db.session import get_db
 
 router = APIRouter(prefix="/api")
+
+
+@router.post("/signup")
+async def signup(payload: dict, db: Session = Depends(get_db)):
+    """Create a new user account. Fields: first_name, last_name,
+    national_code (required, 10 digits), phone_number (11 digits)."""
+    first_name = (payload.get("first_name") or "").strip()
+    last_name = (payload.get("last_name") or "").strip()
+    national_code = (payload.get("national_code") or "").strip()
+    phone_number = (payload.get("phone_number") or "").strip()
+
+    if not national_code:
+        return {"error": "کد ملی الزامی است"}
+    if not re.fullmatch(r"\d{10}", national_code):
+        return {"error": "کد ملی باید ۱۰ رقم باشد"}
+    if phone_number and not re.fullmatch(r"09\d{9}", phone_number):
+        return {"error": "شماره تماس باید با ۰۹ شروع شده و ۱۱ رقم باشد"}
+
+    existing = db.query(models.User).filter(
+        models.User.national_code == national_code
+    ).first()
+    if existing:
+        return {"error": "کاربری با این کد ملی قبلاً ثبت شده است"}
+
+    user = models.User(
+        first_name=first_name or None,
+        last_name=last_name or None,
+        national_code=national_code,
+        phone_number=phone_number or None,
+        role=1,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    return {
+        "success": True,
+        "user": {
+            "user_id": str(user.user_id),
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "national_code": user.national_code,
+            "phone_number": user.phone_number,
+            "role": user.role,
+        },
+    }
 
 
 @router.post("/login")
