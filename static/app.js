@@ -16,6 +16,7 @@ let recordingStartTime = null;
 
 let sessionContext = {};           // { v_code: value }
 let sessionConfidence = {};        // { v_code: 0..1 } – AI confidence per field
+let sessionConfidenceReasons = {}; // { v_code: reason } – why confidence is below 1
 let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value } }
 let fieldWarnings = {};           // { v_code: [ { message, severity } ] }
 let currentSubmissionId = null;   // set once a patient/submission is started
@@ -646,6 +647,14 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
                 });
             }
 
+            // Track why each field's confidence is below 1 — passed forward
+            // to the anomaly checks so they can pay extra attention.
+            if (result.confidence_reasons) {
+                Object.entries(result.confidence_reasons).forEach(([vcode, reason]) => {
+                    if (reason) sessionConfidenceReasons[vcode] = String(reason);
+                });
+            }
+
             applyAiResults(result.data);
 
             updateQuestionVisibility();
@@ -664,7 +673,8 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
                     body: JSON.stringify({
                         section_key: sectionKey,
                         answers: sessionContext,
-                        confidence_reasons: result.confidence_reasons || {}  
+                        confidence_reasons: result.confidence_reasons || {},
+                        submission_id: currentSubmissionId
                     })
                 });
                 const anomalyData = await anomalyResp.json();
@@ -696,16 +706,56 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
 
 // On a failed send the recording is still in memory; let the user retry it with
 // one click instead of re-recording the whole section.
+let pendingRetrySection = null;
+
 function offerAudioRetry(sectionKey, message) {
-    if (lastAudioBySection[sectionKey] &&
-        confirm(`${message}\n\nصدای ضبط‌شده حفظ شده است. آیا می‌خواهید دوباره ارسال شود؟`)) {
-        // Re-show the analyzing state, then resend the held blob.
-        const text = document.getElementById(`text-${sectionKey}`);
-        if (text) text.innerText = "در حال تحلیل...";
-        sendAudioToServer(sectionKey, null);
-    } else {
-        alert(message);
+    console.error('[sendAudioToServer]', message);
+    if (!lastAudioBySection[sectionKey]) {
+        showToast('ارسال صدای ضبط‌شده ناموفق بود. لطفاً دوباره ضبط کنید.');
+        return;
     }
+    pendingRetrySection = sectionKey;
+    document.getElementById('audio-retry-message').textContent =
+        'ارسال صدای ضبط‌شده با مشکل مواجه شد. صدای شما حفظ شده و می‌توانید دوباره تلاش کنید.';
+    document.getElementById('audio-retry-modal').classList.add('open');
+}
+
+function retryAudioSend() {
+    const sectionKey = pendingRetrySection;
+    closeAudioRetryModal();
+    if (!sectionKey) return;
+    // Re-show the analyzing state, then resend the held blob.
+    const text = document.getElementById(`text-${sectionKey}`);
+    if (text) text.innerText = "در حال تحلیل...";
+    sendAudioToServer(sectionKey, null);
+}
+
+function closeAudioRetryModal() {
+    document.getElementById('audio-retry-modal').classList.remove('open');
+    pendingRetrySection = null;
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeAudioRetryModal();
+});
+
+// Non-blocking error notice (auto-dismisses after 5 seconds).
+function showToast(message) {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.innerHTML = `<svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+    </svg>`;
+    const span = document.createElement('span');
+    span.textContent = message;
+    toast.appendChild(span);
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transition = 'opacity 0.3s';
+        setTimeout(() => toast.remove(), 300);
+    }, 5000);
 }
 
 // ---------- Warning UI functions ----------
@@ -876,14 +926,45 @@ async function submitFinalForm() {
         return;
     }
 
-    // Warn (but don't block) if anomalies are still open
-    const openWarnings = Object.values(fieldWarnings).reduce((s, a) => s + a.length, 0);
-    if (openWarnings > 0 &&
-        !confirm(`${openWarnings} هشدار بررسی‌نشده وجود دارد. آیا مطمئن هستید که می‌خواهید ثبت نهایی کنید؟`)) {
-        return;
+    const submitBtn = document.getElementById('panel-submit-btn');
+    const originalLabel = submitBtn ? submitBtn.textContent : '';
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'در حال بررسی...';
     }
 
     try {
+        // Final whole-form cross-section sanity pass before locking the record.
+        const finalResp = await fetch('/check-final-anomalies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                submission_id: currentSubmissionId,
+                answers: sessionContext,
+                confidence_reasons: sessionConfidenceReasons,
+            })
+        });
+        const finalData = await finalResp.json();
+        if (!finalData.error && finalData.warnings && finalData.warnings.length > 0) {
+            finalData.warnings.forEach(w => {
+                if (!fieldWarnings[w.v_code]) fieldWarnings[w.v_code] = [];
+                fieldWarnings[w.v_code].push({
+                    message: w.message,
+                    severity: w.severity || 'warning'
+                });
+            });
+            applyFieldWarnings();
+            updateSectionBadges();
+            updateWarningPanel();
+        }
+
+        // Warn (but don't block) if anomalies are still open
+        const openWarnings = Object.values(fieldWarnings).reduce((s, a) => s + a.length, 0);
+        if (openWarnings > 0 &&
+            !confirm(`${openWarnings} هشدار بررسی‌نشده وجود دارد. آیا مطمئن هستید که می‌خواهید ثبت نهایی کنید؟`)) {
+            return;
+        }
+
         const res = await fetch('/complete-submission', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -905,5 +986,10 @@ async function submitFinalForm() {
     } catch (err) {
         console.error('complete-submission failed:', err);
         alert('ارتباط با سرور با مشکل مواجه شد.');
+    } finally {
+        if (submitBtn) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = originalLabel;
+        }
     }
 }

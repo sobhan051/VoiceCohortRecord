@@ -46,6 +46,7 @@ async def check_section_anomalies(
     section_key = payload.get("section_key")
     answers = payload.get("answers", {})
     confidence_reasons = payload.get("confidence_reasons", None)
+    submission_id = payload.get("submission_id", None)
 
     if not section_key:
         return {"error": "section_key is required"}
@@ -82,11 +83,109 @@ async def check_section_anomalies(
 
     filtered_answers = {v: answers[v] for v in relevant_vcodes if v in answers}
 
+    # Pull the verbatim transcript of this section's recording from the stored
+    # responses so the checker can confirm suspicious readings and catch
+    # values that were spoken but not extracted.
+    transcript = None
+    if submission_id:
+        try:
+            saved = db.query(models.Response).filter(
+                and_(
+                    models.Response.submission_id == UUID(submission_id),
+                    models.Response.transcript.isnot(None),
+                )
+            ).limit(1).first()
+            if saved and saved.transcript:
+                transcript = saved.transcript
+        except (ValueError, AttributeError):
+            pass
+
     try:
-        warnings = PromptGenerator.check_anomalies(filtered_answers, questions_meta, confidence_reasons)
+        warnings = PromptGenerator.check_anomalies(
+            filtered_answers, questions_meta, confidence_reasons, transcript
+        )
         return {"warnings": warnings}
     except Exception as e:
         print(f"Per‑section anomaly check error: {e}")
+        return {"error": str(e)}
+
+
+@router.post("/check-final-anomalies")
+async def check_final_anomalies(
+    payload: dict,   # { "submission_id": "...", "answers": {...}, "confidence_reasons": {...} }
+    db: Session = Depends(get_db)
+):
+    """Form-level cross-section sanity pass, run at submit time.
+
+    Gathers every answered field for the submission (grouping them by section,
+    with the question context + option-code meanings) plus the verbatim
+    transcripts of every recorded section, then asks the model to flag
+    contradictions or unsafe combinations that span sections.
+    """
+    submission_id = payload.get("submission_id")
+    answers = payload.get("answers", {}) or {}
+    confidence_reasons = payload.get("confidence_reasons", {}) or {}
+    if not submission_id:
+        return {"error": "submission_id الزامی است"}
+    try:
+        sub_id = UUID(submission_id)
+    except ValueError:
+        return {"error": "شناسه ثبت نامعتبر است"}
+
+    submission = db.query(models.Submission).filter(
+        models.Submission.submission_id == sub_id
+    ).first()
+    if not submission:
+        return {"error": "ثبت مورد نظر یافت نشد"}
+
+    # Question + section metadata so we can group by section and decode options.
+    questions_by_id = {q.question_id: q for q in db.query(models.Question).all()}
+    sections_by_id = {s.section_id: s for s in db.query(models.Section).all()}
+
+    # v_code -> question, and v_code -> section_key (via question.section_id).
+    vcode_to_question = {q.v_code: q for q in questions_by_id.values()}
+    vcode_to_section = {
+        vc: sections_by_id[q.section_id].section_key
+        for vc, q in vcode_to_question.items()
+        if q.section_id in sections_by_id
+    }
+
+    # Group the current answer set by section for the model.
+    all_questions_meta = {}
+    for vc, val in answers.items():
+        if val is None or val == "":
+            continue
+        q = vcode_to_question.get(vc)
+        if not q:
+            continue
+        sk = vcode_to_section.get(vc, "سایر")
+        all_questions_meta.setdefault(sk, []).append({
+            "v_code": q.v_code,
+            "question_text_fa": q.question_text_fa,
+            "response_type": q.response_type,
+            "unit": q.unit,
+            "coding_options": q.coding_options,
+        })
+
+    # Verbatim transcripts are stored on Response rows; grab the latest per section.
+    transcripts = {}
+    saved = db.query(models.Response).filter(
+        models.Response.submission_id == sub_id
+    ).all()
+    for r in saved:
+        if not r.transcript:
+            continue
+        sk = vcode_to_section.get(r.v_code)
+        if sk:
+            transcripts.setdefault(sk, r.transcript)
+
+    try:
+        warnings = PromptGenerator.check_final_anomalies(
+            answers, all_questions_meta, transcripts, confidence_reasons
+        )
+        return {"warnings": warnings}
+    except Exception as e:
+        print(f"Final anomaly check error: {e}")
         return {"error": str(e)}
 
 

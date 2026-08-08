@@ -156,59 +156,9 @@ def _run_with_failover(call):
 
 class PromptGenerator:
     @staticmethod
-    def check_anomalies(answers, questions_meta, confidence_reasons=None):
-        # Build base prompt
-        prompt = (
-            "You are a medical quality control assistant. "
-            "Review the following patient answers for clinical inconsistencies, "
-            "medically suspicious values, contradictions, or suspicious combinations. " 
-            "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that are clearly medically significant or potentially unsafe. \n\n"
-        )
-
-        # Append field descriptions
-        field_descriptions = []
-        for q in questions_meta:
-            vc = q["v_code"]
-            if vc not in answers or answers[vc] is None:
-                continue
-            val = answers[vc]
-            desc = f"Q: {q['question_text_fa']} (code {vc}, type {q['response_type']}"
-            if q.get("unit"):
-                desc += f", unit {q['unit']}"
-            desc += f") → ANSWER: {val}"
-            if q.get("coding_options"):
-                try:
-                    opts = json.loads(q["coding_options"]) if isinstance(q["coding_options"], str) else q["coding_options"]
-                    if val in opts:
-                        desc += f" ({opts[val]})"
-                except:
-                    pass
-            field_descriptions.append(desc)
-        prompt += "\n".join(field_descriptions) + "\n\n"
-
-        # Append confidence hints if available
-        if confidence_reasons:
-            hints = []
-            for vc, reason in confidence_reasons.items():
-                if reason:
-                    hints.append(f"- {vc}: {reason}")
-            if hints:
-                prompt += (
-                    "The extraction AI flagged the following fields with possible issues:\n"
-                    + "\n".join(hints)
-                )
-
-        # Final instructions
-        prompt += (
-            "Return a JSON array of warnings. Each warning must have: "
-            "'v_code' (the code of the suspicious field "
-            "'message' (short explanation in Persian), and "
-            "'severity' (either 'warning' or 'critical'). "
-            "If everything looks consistent, return an empty array.\n"
-            "Output ONLY a valid JSON array, no other text."
-        )
-
-        warning_schema = {
+    def _format_warning_schema():
+        """Shared JSON schema for anomaly-check responses (section + final)."""
+        return {
             "type": "array",
             "items": {
                 "type": "object",
@@ -221,13 +171,96 @@ class PromptGenerator:
             }
         }
 
+    @staticmethod
+    def _append_option_meanings(desc_parts, q):
+        """Append the human meaning of each option code (e.g. 1=زن, 2=مرد)
+        so the checker reasons about clinical meaning, not opaque codes."""
+        opts = q.get("coding_options")
+        if not opts:
+            return
+        try:
+            opts = json.loads(opts) if isinstance(opts, str) else opts
+        except Exception:
+            return
+        if isinstance(opts, dict) and opts:
+            meaning = ", ".join(f"{k}={v}" for k, v in opts.items())
+            desc_parts.append(f"options: {meaning}")
+
+    @classmethod
+    def _build_field_line(cls, q, value, include_options=True):
+        parts = [
+            f"Q: {q['question_text_fa']} (code {q['v_code']}, type {q['response_type']}"
+        ]
+        if q.get("unit"):
+            parts.append(f", unit {q['unit']}")
+        parts.append(f") → ANSWER: {value}")
+        if include_options:
+            cls._append_option_meanings(parts, q)
+        return "".join(parts)
+
+    @classmethod
+    def check_anomalies(cls, answers, questions_meta, confidence_reasons=None, transcript=None):
+        # Build base prompt
+        prompt = (
+            "You are a medical quality control assistant. "
+            "Review the following patient answers for clinical inconsistencies, "
+            "medically suspicious values, contradictions, or suspicious combinations. "
+            "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that are "
+            "clearly medically significant or potentially unsafe. "
+            "Do not nitpick minor or harmless details.\n\n"
+        )
+
+        # Append field descriptions (options decoded so the model reasons about
+        # the clinical meaning behind each code)
+        field_descriptions = []
+        for q in questions_meta:
+            vc = q["v_code"]
+            if vc not in answers or answers[vc] is None:
+                continue
+            field_descriptions.append(cls._build_field_line(q, answers[vc]))
+        if field_descriptions:
+            prompt += "Patient answers:\n" + "\n".join(field_descriptions) + "\n\n"
+
+        # Append confidence hints if available
+        if confidence_reasons:
+            hints = []
+            for vc, reason in confidence_reasons.items():
+                if reason:
+                    hints.append(f"- {vc}: {reason}")
+            if hints:
+                prompt += (
+                    "The extraction AI flagged the following fields as uncertain; "
+                    "pay extra attention to them:\n"
+                    + "\n".join(hints)
+                    + "\n\n"
+                )
+
+        # Verbatim transcript — helps the checker catch values mentioned in
+        # speech that were not extracted, and confirm suspicious readings.
+        if transcript:
+            prompt += (
+                "Verbatim transcript of the recording (the authoritative record):\n"
+                + transcript
+                + "\n\n"
+            )
+
+        # Final instructions
+        prompt += (
+            "Return a JSON array of warnings. Each warning must have: "
+            "'v_code' (the code of the suspicious field), "
+            "'message' (short explanation in Persian), and "
+            "'severity' (either 'warning' or 'critical'). "
+            "If everything looks consistent, return an empty array.\n"
+            "Output ONLY a valid JSON array, no other text."
+        )
+
         def _call(client):
             return client.models.generate_content(
                 model=config.ANOMALY_MODEL,
                 contents=[prompt],
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=warning_schema,
+                    response_schema=PromptGenerator._format_warning_schema(),
                     temperature=0.0,
                 ),
             )
@@ -237,7 +270,95 @@ class PromptGenerator:
         print("\n=== ANOMALY RAW RESPONSE ===")
         print(response.text)
         print("=== END ANOMALY ===\n")
-        return json.loads(response.text)
+        try:
+            parsed = json.loads(response.text)
+            return parsed if isinstance(parsed, list) else [parsed]
+        except Exception:
+            return []
+
+    @classmethod
+    def check_final_anomalies(cls, all_answers, all_questions_meta, transcripts=None, confidence_reasons=None):
+        """Cross-section quality pass over ALL answers of a submission at submit
+        time — catches contradictions between sections (e.g. section B says
+        'never smoked' while section C's meds include a COPD drug)."""
+        prompt = (
+            "You are a medical quality control assistant reviewing the COMPLETE "
+            "set of answers for one patient across ALL form sections. "
+            "Look for inconsistencies, contradictions, medically impossible or "
+            "suspicious values, and unsafe combinations that may span across "
+            "different sections of the questionnaire. "
+            "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that "
+            "are clearly medically significant or potentially unsafe. "
+            "Do not nitpick minor wording or harmless details.\n\n"
+        )
+
+        # All answered fields with section context.
+        for section, questions_meta in all_questions_meta.items():
+            answered = [
+                (q, all_answers[q["v_code"]])
+                for q in questions_meta
+                if all_answers.get(q["v_code"]) is not None
+            ]
+            if not answered:
+                continue
+            prompt += f"[Section: {section}]\n"
+            for q, val in answered:
+                prompt += cls._build_field_line(q, val) + "\n"
+            prompt += "\n"
+
+        # Verbatim transcripts — give the checker the actual speech to confirm
+        # suspicious readings or catch mentioned-but-unanswered values.
+        if transcripts:
+            prompt += "Verbatim transcripts of each section's recording (authoritative record):\n"
+            for section, text in transcripts.items():
+                if text:
+                    prompt += f"[Section {section}]: {text}\n"
+
+        if confidence_reasons:
+            hints = [
+                f"- {vc}: {reason}"
+                for vc, reason in confidence_reasons.items()
+                if reason
+            ]
+            if hints:
+                prompt += (
+                    "The extraction AI flagged the following fields as uncertain; "
+                    "pay extra attention to them:\n"
+                    + "\n".join(hints)
+                    + "\n\n"
+                )
+
+        prompt += (
+            "Return a JSON array of warnings. Each warning must have: "
+            "'v_code' (the code of the suspicious field), "
+            "'message' (short explanation in Persian), and "
+            "'severity' (either 'warning' or 'critical'). "
+            "If everything looks consistent, return an empty array.\n"
+            "Output ONLY a valid JSON array, no other text."
+        )
+
+        def _call(client):
+            return client.models.generate_content(
+                model=config.ANOMALY_MODEL,
+                contents=[prompt],
+                config=GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=PromptGenerator._format_warning_schema(),
+                    temperature=0.0,
+                ),
+            )
+
+        response = _run_with_failover(_call)
+
+        print("\n=== [FINAL ANOMALY RAW RESPONSE] ===")
+        print(response.text)
+        print("=== END FINAL ANOMALY ===\n")
+
+        try:
+            parsed = json.loads(response.text)
+            return parsed if isinstance(parsed, list) else [parsed]
+        except Exception:
+            return []
 
     @staticmethod
     def _build_response_schema(questions):
@@ -377,11 +498,20 @@ class PromptGenerator:
             "Transcribe the audio in Farsi and analyze it and extract answers according to the rules below.\n\n"
             + "\n".join(specs)
             + "\n\n"
-        )
-        prompt += (
-            "IMPORTANT: Follow the rule for each CODE exactly. "
+            "IMPORTANT: For each rule, extract ONLY what is actually said on the recording. "
+            "Never guess, infer, or fill in a value that is not clearly spoken. "
+            "If a field is not mentioned or is unclear, return null for that field. "
+            "Do not invent or fabricate answers.\n\n"
+            "TRANSCRIPT: Provide a FULL, VERBATIM transcript of the speech in Farsi. "
+            "Transcribe every word that is said, exactly as spoken, without summarizing, "
+            "correcting, or editing. The transcript is the official record of the recording "
+            "and will be used to recover any field that could not be extracted. "
+            "If a field is unclear, still extract every other field and leave only the "
+            "unclear fields as null.\n\n"
             "For every field also provide a confidence score between 0 and 1 "
             "(0 = completely guessing, 1 = absolutely certain). "
+            "The confidence must be below 1 whenever the value was hard to hear, "
+            "ambiguous, or inferred. "
             "Additionally, for each field provide a short reason (in Persian or English) explaining "
             "why the confidence is lower than 1. If confidence is 1, the reason must be an empty string."
         )
