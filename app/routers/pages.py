@@ -10,8 +10,8 @@ router = APIRouter()
 
 @router.get("/")
 async def read_index():
-    """Serve the dashboard page (login + role-based dashboard)"""
-    return FileResponse(str(STATIC_DIR / "dashboard.html"))
+    """Serve the signup page (default entry)"""
+    return FileResponse(str(STATIC_DIR / "signup.html"))
 
 
 @router.get("/form")
@@ -24,6 +24,12 @@ async def questionnaire():
 async def signup_page():
     """Serve the signup page"""
     return FileResponse(str(STATIC_DIR / "signup.html"))
+
+
+@router.get("/login")
+async def login_page():
+    """Serve the login page"""
+    return FileResponse(str(STATIC_DIR / "dashboard.html"))
 
 
 @router.get("/cdn/tailwindcss")

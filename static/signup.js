@@ -60,7 +60,7 @@ document.getElementById('signup-form').addEventListener('submit', async (e) => {
         }
         // Logged in automatically — persist the session like dashboard.js does.
         localStorage.setItem('vcr_user', JSON.stringify(data.user));
-        window.location.href = '/';
+        window.location.href = '/login';
     } catch (err) {
         console.error('Signup failed:', err);
         showError('ارتباط با سرور با مشکل مواجه شد.');

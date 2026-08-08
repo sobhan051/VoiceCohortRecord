@@ -83,8 +83,8 @@ function getBestAudioMimeType() {
 
 // ---------- Session-based Patient / Submission gate ----------
 function changePatient() {
-    // Redirect to dashboard to pick a different user
-    window.location.href = '/';
+    // Redirect to the dashboard to pick a different user
+    window.location.href = '/login';
 }
 
 async function autoStartFromSession() {
@@ -93,9 +93,9 @@ async function autoStartFromSession() {
     // Read user session from localStorage (set by dashboard on login)
     const saved = localStorage.getItem('vcr_user');
     if (!saved) {
-        errEl.textContent = 'نشست کاربری یافت نشد. لطفاً ابتدا از داشبورد وارد شوید.';
+        errEl.textContent = 'نشست کاربری یافت نشد. لطفاً ابتدا وارد شوید.';
         errEl.classList.remove('hidden');
-        setTimeout(() => { window.location.href = '/'; }, 3000);
+        setTimeout(() => { window.location.href = '/login'; }, 3000);
         return;
     }
 
@@ -106,7 +106,7 @@ async function autoStartFromSession() {
         errEl.textContent = 'اطلاعات نشست نامعتبر است. لطفاً دوباره وارد شوید.';
         errEl.classList.remove('hidden');
         localStorage.removeItem('vcr_user');
-        setTimeout(() => { window.location.href = '/'; }, 3000);
+        setTimeout(() => { window.location.href = '/login'; }, 3000);
         return;
     }
 
@@ -472,9 +472,9 @@ async function toggleRecording(sectionKey) {
     const text = document.getElementById(`text-${sectionKey}`);
 
     if (!recordingStates[sectionKey] && !currentSubmissionId) {
-        // No active session — redirect to dashboard
-        alert('لطفاً ابتدا از داشبورد وارد شوید.');
-        window.location.href = '/';
+        // No active session — redirect to login
+        alert('لطفاً ابتدا وارد شوید.');
+        window.location.href = '/login';
         return;
     }
 
