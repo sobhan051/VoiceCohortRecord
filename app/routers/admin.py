@@ -4,7 +4,6 @@ NOTE: these routes have no authentication and expose patient PII. Do not
 expose this service publicly without adding access control.
 """
 from datetime import datetime, timedelta
-from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -15,10 +14,10 @@ from app import models
 from app.db.session import get_db
 
 
-def _uuid(val: str):
+def _int(val):
     try:
-        return UUID(val)
-    except ValueError:
+        return int(val)
+    except (ValueError, TypeError):
         return None
 
 router = APIRouter(prefix="/api/admin")
@@ -105,8 +104,8 @@ async def admin_submission_detail(
     """Get detailed submission data"""
 
     try:
-        sub_id = UUID(submission_id)
-    except:
+        sub_id = int(submission_id)
+    except (ValueError, TypeError):
         return {"error": "Invalid submission ID"}
 
     submission = db.query(models.Submission).filter(
@@ -219,7 +218,7 @@ async def admin_delete_user(
     """Delete a user"""
 
     try:
-        uid = UUID(user_id)
+        uid = int(user_id)
         user = db.query(models.User).filter(models.User.user_id == uid).first()
 
         if not user:
@@ -271,7 +270,7 @@ async def admin_create_form(payload: dict, db: Session = Depends(get_db)):
 @router.put("/forms/{form_id}")
 async def admin_update_form(form_id: str, payload: dict, db: Session = Depends(get_db)):
     """Update a form"""
-    uid = _uuid(form_id)
+    uid = _int(form_id)
     if not uid:
         return {"error": "Invalid form ID"}
     f = db.query(models.Form).filter(models.Form.form_id == uid).first()
@@ -288,7 +287,7 @@ async def admin_update_form(form_id: str, payload: dict, db: Session = Depends(g
 @router.delete("/forms/{form_id}")
 async def admin_delete_form(form_id: str, db: Session = Depends(get_db)):
     """Delete a form and its sections and questions"""
-    uid = _uuid(form_id)
+    uid = _int(form_id)
     if not uid:
         return {"error": "Invalid form ID"}
     f = db.query(models.Form).filter(models.Form.form_id == uid).first()
@@ -312,7 +311,7 @@ async def admin_delete_form(form_id: str, db: Session = Depends(get_db)):
 @router.get("/forms/{form_id}/sections")
 async def admin_form_sections(form_id: str, db: Session = Depends(get_db)):
     """Get all sections for a form"""
-    uid = _uuid(form_id)
+    uid = _int(form_id)
     if not uid:
         return {"error": "Invalid form ID"}
     sections = db.query(models.Section).filter(
@@ -339,7 +338,7 @@ async def admin_create_section(payload: dict, db: Session = Depends(get_db)):
     """Create a section"""
     try:
         s = models.Section(
-            form_id=_uuid(payload.get("form_id")),
+            form_id=_int(payload.get("form_id")),
             section_key=payload.get("section_key"),
             name_fa=payload.get("name_fa"),
             sort_order=payload.get("sort_order", 0),
@@ -359,7 +358,7 @@ async def admin_create_section(payload: dict, db: Session = Depends(get_db)):
 @router.put("/sections/{section_id}")
 async def admin_update_section(section_id: str, payload: dict, db: Session = Depends(get_db)):
     """Update a section"""
-    uid = _uuid(section_id)
+    uid = _int(section_id)
     if not uid:
         return {"error": "Invalid section ID"}
     s = db.query(models.Section).filter(models.Section.section_id == uid).first()
@@ -371,7 +370,7 @@ async def admin_update_section(section_id: str, payload: dict, db: Session = Dep
         if field in payload:
             setattr(s, field, payload[field])
     if "form_id" in payload:
-        s.form_id = _uuid(payload["form_id"])
+        s.form_id = _int(payload["form_id"])
     db.commit()
     return {"success": True}
 
@@ -379,7 +378,7 @@ async def admin_update_section(section_id: str, payload: dict, db: Session = Dep
 @router.delete("/sections/{section_id}")
 async def admin_delete_section(section_id: str, db: Session = Depends(get_db)):
     """Delete a section and its questions"""
-    uid = _uuid(section_id)
+    uid = _int(section_id)
     if not uid:
         return {"error": "Invalid section ID"}
     s = db.query(models.Section).filter(models.Section.section_id == uid).first()
@@ -399,7 +398,7 @@ async def admin_delete_section(section_id: str, db: Session = Depends(get_db)):
 @router.get("/sections/{section_id}/questions")
 async def admin_section_questions(section_id: str, db: Session = Depends(get_db)):
     """Get all questions for a section"""
-    uid = _uuid(section_id)
+    uid = _int(section_id)
     if not uid:
         return {"error": "Invalid section ID"}
     questions = db.query(models.Question).filter(
@@ -427,7 +426,7 @@ async def admin_create_question(payload: dict, db: Session = Depends(get_db)):
     """Create a question"""
     try:
         q = models.Question(
-            section_id=_uuid(payload.get("section_id")),
+            section_id=_int(payload.get("section_id")),
             v_code=payload.get("v_code"),
             variable_name=payload.get("variable_name"),
             question_text_fa=payload.get("question_text_fa"),
@@ -448,7 +447,7 @@ async def admin_create_question(payload: dict, db: Session = Depends(get_db)):
 @router.put("/questions/{question_id}")
 async def admin_update_question(question_id: str, payload: dict, db: Session = Depends(get_db)):
     """Update a question"""
-    uid = _uuid(question_id)
+    uid = _int(question_id)
     if not uid:
         return {"error": "Invalid question ID"}
     q = db.query(models.Question).filter(models.Question.question_id == uid).first()
@@ -459,7 +458,7 @@ async def admin_update_question(question_id: str, payload: dict, db: Session = D
         if field in payload:
             setattr(q, field, payload[field])
     if "section_id" in payload:
-        q.section_id = _uuid(payload["section_id"])
+        q.section_id = _int(payload["section_id"])
     db.commit()
     return {"success": True}
 
@@ -467,7 +466,7 @@ async def admin_update_question(question_id: str, payload: dict, db: Session = D
 @router.delete("/questions/{question_id}")
 async def admin_delete_question(question_id: str, db: Session = Depends(get_db)):
     """Delete a question"""
-    uid = _uuid(question_id)
+    uid = _int(question_id)
     if not uid:
         return {"error": "Invalid question ID"}
     q = db.query(models.Question).filter(models.Question.question_id == uid).first()
@@ -486,7 +485,7 @@ async def admin_delete_question(question_id: str, db: Session = Depends(get_db))
 @router.put("/users/{user_id}")
 async def admin_update_user(user_id: str, payload: dict, db: Session = Depends(get_db)):
     """Update a user"""
-    uid = _uuid(user_id)
+    uid = _int(user_id)
     if not uid:
         return {"error": "Invalid user ID"}
     u = db.query(models.User).filter(models.User.user_id == uid).first()
@@ -502,7 +501,7 @@ async def admin_update_user(user_id: str, payload: dict, db: Session = Depends(g
 @router.delete("/submissions/{submission_id}")
 async def admin_delete_submission(submission_id: str, db: Session = Depends(get_db)):
     """Delete a submission and its responses"""
-    uid = _uuid(submission_id)
+    uid = _int(submission_id)
     if not uid:
         return {"error": "Invalid submission ID"}
     sub = db.query(models.Submission).filter(models.Submission.submission_id == uid).first()
@@ -520,7 +519,7 @@ async def admin_delete_submission(submission_id: str, db: Session = Depends(get_
 @router.delete("/responses/{response_id}")
 async def admin_delete_response(response_id: str, db: Session = Depends(get_db)):
     """Delete a single response"""
-    uid = _uuid(response_id)
+    uid = _int(response_id)
     if not uid:
         return {"error": "Invalid response ID"}
     r = db.query(models.Response).filter(models.Response.response_id == uid).first()

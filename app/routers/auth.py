@@ -4,7 +4,6 @@ Simple login via national_code (no password — the User model has none).
 Dashboard data differs per role (1=user, 2=admin).
 """
 import re
-from uuid import UUID
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import desc, func
@@ -92,8 +91,8 @@ async def login(payload: dict, db: Session = Depends(get_db)):
 async def dashboard(user_id: str, db: Session = Depends(get_db)):
     """Get dashboard data for a user. Returns role-specific data."""
     try:
-        uid = UUID(user_id)
-    except ValueError:
+        uid = int(user_id)
+    except (ValueError, TypeError):
         return {"error": "شناسه کاربر نامعتبر است"}
 
     user = db.query(models.User).filter(models.User.user_id == uid).first()

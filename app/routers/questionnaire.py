@@ -4,7 +4,6 @@ import os
 import shutil
 import uuid
 from datetime import datetime
-from uuid import UUID
 
 from app.services.audio_processor import process_audio_file
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -25,7 +24,7 @@ async def get_form(form_id: str = None, db: Session = Depends(get_db)):
     query = db.query(models.Section)
     if form_id:
         try:
-            fid = UUID(form_id)
+            fid = int(form_id)
             query = query.filter(models.Section.form_id == fid)
         except ValueError:
             pass
@@ -98,7 +97,7 @@ async def check_section_anomalies(
         try:
             saved = db.query(models.Response).filter(
                 and_(
-                    models.Response.submission_id == UUID(submission_id),
+                    models.Response.submission_id == int(submission_id),
                     models.Response.transcript.isnot(None),
                 )
             ).limit(1).first()
@@ -135,8 +134,8 @@ async def check_final_anomalies(
     if not submission_id:
         return {"error": "submission_id الزامی است"}
     try:
-        sub_id = UUID(submission_id)
-    except ValueError:
+        sub_id = int(submission_id)
+    except (ValueError, TypeError):
         return {"error": "شناسه ثبت نامعتبر است"}
 
     submission = db.query(models.Submission).filter(
@@ -211,8 +210,8 @@ async def start_submission(
     user_id = payload.get("user_id")
     if user_id:
         try:
-            user = db.query(models.User).filter(models.User.user_id == UUID(user_id)).first()
-        except (ValueError, AttributeError):
+            user = db.query(models.User).filter(models.User.user_id == int(user_id)).first()
+        except (ValueError, AttributeError, TypeError):
             return {"error": "شناسه کاربر نامعتبر است"}
         if not user:
             return {"error": "کاربر یافت نشد"}
@@ -245,8 +244,8 @@ async def start_submission(
     form_id = payload.get("form_id")
     if form_id:
         try:
-            form = db.query(models.Form).filter(models.Form.form_id == UUID(form_id)).first()
-        except (ValueError, AttributeError):
+            form = db.query(models.Form).filter(models.Form.form_id == int(form_id)).first()
+        except (ValueError, AttributeError, TypeError):
             return {"error": "شناسه فرم نامعتبر است"}
         if not form:
             return {"error": "فرم یافت نشد"}
@@ -326,8 +325,8 @@ async def complete_submission(
     if not submission_id:
         return {"error": "submission_id الزامی است"}
     try:
-        sub_id = UUID(submission_id)
-    except ValueError:
+        sub_id = int(submission_id)
+    except (ValueError, TypeError):
         return {"error": "شناسه ثبت نامعتبر است"}
 
     submission = db.query(models.Submission).filter(
@@ -408,8 +407,8 @@ async def process_voice(
     sub_id = None
     if submission_id:
         try:
-            sub_id = UUID(submission_id)
-        except ValueError:
+            sub_id = int(submission_id)
+        except (ValueError, TypeError):
             return {"error": "شناسه ثبت نامعتبر است"}
         if not db.query(models.Submission).filter(
             models.Submission.submission_id == sub_id

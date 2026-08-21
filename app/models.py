@@ -1,14 +1,13 @@
 from sqlalchemy import Column, String, Integer, ForeignKey, Text, DateTime, Float, Boolean
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
-import uuid
 
 from app.db.base import Base
 
 
 class User(Base):
     __tablename__ = "users"
-    user_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(Integer, primary_key=True, autoincrement=True)
     first_name = Column(String(100))
     last_name = Column(String(100))
     national_code = Column(String(20), nullable=False, unique=True)
@@ -19,15 +18,15 @@ class User(Base):
 
 class Form(Base):
     __tablename__ = "forms"
-    form_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    form_id = Column(Integer, primary_key=True, autoincrement=True)
     form_name = Column(String(255), nullable=False)
     category = Column(String(100))
 
 
 class Section(Base):
     __tablename__ = "sections"
-    section_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    form_id = Column(UUID(as_uuid=True), ForeignKey("forms.form_id"))
+    section_id = Column(Integer, primary_key=True, autoincrement=True)
+    form_id = Column(Integer, ForeignKey("forms.form_id"))
     section_key = Column(String(50))
     name_fa = Column(String(255))
     sort_order = Column(Integer, default=0)
@@ -39,8 +38,8 @@ class Section(Base):
 
 class Question(Base):
     __tablename__ = "questions"
-    question_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    section_id = Column(UUID(as_uuid=True), ForeignKey("sections.section_id"))
+    question_id = Column(Integer, primary_key=True, autoincrement=True)
+    section_id = Column(Integer, ForeignKey("sections.section_id"))
     v_code = Column(String(20), unique=True)
     variable_name = Column(String(100))
     question_text_fa = Column(Text)
@@ -53,9 +52,9 @@ class Question(Base):
 
 class Submission(Base):
     __tablename__ = "submissions"
-    submission_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.user_id"))
-    form_id = Column(UUID(as_uuid=True), ForeignKey("forms.form_id"))
+    submission_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.user_id"))
+    form_id = Column(Integer, ForeignKey("forms.form_id"))
     status = Column(String(20), default='draft')
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now())
@@ -63,10 +62,10 @@ class Submission(Base):
 
 class Response(Base):
     __tablename__ = "responses"
-    response_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    response_id = Column(Integer, primary_key=True, autoincrement=True)
     # Made submission_id nullable so we can store responses without a full submission
-    submission_id = Column(UUID(as_uuid=True), ForeignKey("submissions.submission_id"), nullable=True)
-    question_id = Column(UUID(as_uuid=True), ForeignKey("questions.question_id"))
+    submission_id = Column(Integer, ForeignKey("submissions.submission_id"), nullable=True)
+    question_id = Column(Integer, ForeignKey("questions.question_id"))
     v_code = Column(String(20))
     is_voice = Column(Boolean, default=True)          # missing before
     transcript = Column(Text)
@@ -78,8 +77,8 @@ class Response(Base):
 
 class ApiLog(Base):
     __tablename__ = "api_logs"
-    log_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    submission_id = Column(UUID(as_uuid=True), ForeignKey("submissions.submission_id"), nullable=True)
+    log_id = Column(Integer, primary_key=True, autoincrement=True)
+    submission_id = Column(Integer, ForeignKey("submissions.submission_id"), nullable=True)
     section_key = Column(String(50))
     model_name = Column(String(100))
     prompt_sent = Column(Text)
