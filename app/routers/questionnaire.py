@@ -21,8 +21,15 @@ router = APIRouter()
 
 
 @router.get("/get-form-structure")
-async def get_form(db: Session = Depends(get_db)):
-    sections = db.query(models.Section).order_by(models.Section.sort_order).all()
+async def get_form(form_id: str = None, db: Session = Depends(get_db)):
+    query = db.query(models.Section)
+    if form_id:
+        try:
+            fid = UUID(form_id)
+            query = query.filter(models.Section.form_id == fid)
+        except ValueError:
+            pass
+    sections = query.order_by(models.Section.sort_order).all()
     result = []
     for s in sections:
         qs = db.query(models.Question).filter(

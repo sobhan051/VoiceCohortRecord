@@ -6,8 +6,6 @@
     <title>داشبورد - VCR</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <link href="https://cdn.jsdelivr.net/npm/@fontsource/vazirmatn@5.2.8/400.min.css" rel="stylesheet">
-    <!-- <script src="/cdn/tailwindcss"></script>
-    <link href="/cdn/vazirmatn" rel="stylesheet">             uncomment this if proxy needed-->
     <style>
         body { font-family: 'Vazirmatn', sans-serif; }
         .sidebar-item {
@@ -31,52 +29,16 @@
     </style>
 </head>
 <body class="bg-gray-50 text-gray-800 antialiased">
-    <!-- Login Page -->
-    <div id="login-page" class="min-h-screen flex items-center justify-center p-4">
-        <div class="bg-white rounded-3xl shadow-xl w-full max-w-md p-8">
-            <div class="text-center mb-8">
-                <div class="w-16 h-16 bg-blue-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
-                    <svg class="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
-                    </svg>
-                </div>
-                <h1 class="text-2xl font-bold text-blue-600">پروژه VCR</h1>
-                <p class="text-sm text-gray-400 mt-1">سیستم استخراج داده‌های کوهرت با هوش مصنوعی</p>
-            </div>
-
-            <h2 class="text-xl font-bold text-gray-800 mb-1">ورود به داشبورد</h2>
-            <p class="text-sm text-gray-400 mb-6">کد ملی خود را وارد کنید</p>
-
-            <form id="login-form" class="space-y-4" novalidate>
-                <div>
-                    <label for="login-national" class="block text-xs font-bold text-gray-500 mb-1.5">کد ملی</label>
-                    <input id="login-national" type="text" inputmode="numeric" maxlength="10" placeholder="کد ملی (۱۰ رقم)"
-                           class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 focus:bg-white transition-all font-mono" dir="ltr">
-                </div>
-                <p id="login-error" class="text-sm text-red-500 hidden"></p>
-                <button type="submit" id="login-btn"
-                        class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-                    ورود
-                </button>
-            </form>
-
-            <div class="text-center text-sm mt-6 space-y-2">
-                <p class="text-gray-400">
-                    حساب ندارید؟
-                    <a href="/signup" class="text-blue-600 hover:text-blue-700 font-bold">ثبت‌نام</a>
-                </p>
-                <p>
-                    <a href="/" class="text-blue-600 hover:text-blue-700 font-bold">رفتن به صفحه ثبت‌نام</a>
-                </p>
-            </div>
+    <!-- Loading spinner while session restores -->
+    <div id="session-loading" class="min-h-screen flex items-center justify-center">
+        <div class="text-center">
+            <div class="animate-spin h-10 w-10 mx-auto mb-4 border-4 border-blue-500 border-t-transparent rounded-full"></div>
+            <p class="text-gray-500">در حال بارگذاری داشبورد...</p>
         </div>
     </div>
 
     <!-- Main Dashboard Layout -->
     <div id="dashboard-app" class="hidden">
-        <!-- Dashboard root shown after login -->
-        <div id="dashboard-root" class="hidden">
-        </div>
         <!-- User Dashboard -->
         <div id="user-dashboard" class="hidden">
             <header class="bg-white shadow-sm border-b border-gray-100">
@@ -108,27 +70,19 @@
                     <a href="#" onclick="showAdminSection('dashboard'); return false;" class="sidebar-item active block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="dashboard">
                         <span class="ml-3">📊</span> داشبورد
                     </a>
+                    <a href="#" onclick="showAdminSection('forms'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="forms">
+                        <span class="ml-3">📋</span> مدیریت فرم‌ها
+                    </a>
                     <a href="#" onclick="showAdminSection('submissions'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="submissions">
                         <span class="ml-3">📋</span> پرسشنامه‌ها
                     </a>
                     <a href="#" onclick="showAdminSection('users'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="users">
                         <span class="ml-3">👥</span> کاربران
                     </a>
-                    <a href="#" onclick="showAdminSection('forms'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="forms">
-                        <span class="ml-3">📋</span> مدیریت فرم‌ها
-                    </a>
-                    <a href="#" onclick="showAdminSection('api-logs'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="api-logs">
-                        <span class="ml-3">🤖</span> لاگ‌های هوش مصنوعی
-                    </a>
-                    <a href="#" onclick="showAdminSection('settings'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="settings">
+<a href="#" onclick="showAdminSection('settings'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="settings">
                         <span class="ml-3">⚙️</span> تنظیمات
                     </a>
                 </nav>
-                <div class="p-4 border-t">
-                    <a href="/form" class="block px-4 py-3 rounded-xl text-gray-600 hover:bg-gray-100 transition">
-                        <span class="ml-3">📝</span> پرسشنامه صوتی
-                    </a>
-                </div>
             </aside>
 
             <!-- Main Content Area -->
@@ -150,7 +104,7 @@
     </div>
 
     <!-- Submission Detail Modal -->
-    <div id="submission-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeSubmissionModal()">
+    <div id="submission-modal" class="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeSubmissionModal()">
         <div class="bg-white rounded-2xl max-w-4xl w-full max-h-[80vh] overflow-y-auto m-4" onclick="event.stopPropagation()">
             <div class="sticky top-0 bg-white border-b p-4 flex justify-between items-center">
                 <h3 class="text-xl font-bold">جزئیات پرسشنامه</h3>
@@ -161,7 +115,7 @@
     </div>
 
     <!-- Add/Edit User Modal -->
-    <div id="add-user-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeAddUserModal()">
+    <div id="add-user-modal" class="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeAddUserModal()">
         <div class="bg-white rounded-2xl max-w-md w-full m-4" onclick="event.stopPropagation()">
             <div class="p-6">
                 <h3 id="user-modal-title" class="text-xl font-bold mb-4">افزودن کاربر جدید</h3>
@@ -200,7 +154,7 @@
     </div>
 
     <!-- Form Modal -->
-    <div id="form-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeFormModal()">
+    <div id="form-modal" class="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeFormModal()">
         <div class="bg-white rounded-2xl max-w-md w-full m-4" onclick="event.stopPropagation()">
             <div class="p-6">
                 <h3 id="form-modal-title" class="text-xl font-bold mb-4">افزودن فرم جدید</h3>
@@ -224,7 +178,7 @@
     </div>
 
     <!-- Section Modal -->
-    <div id="section-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeSectionModal()">
+    <div id="section-modal" class="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeSectionModal()">
         <div class="bg-white rounded-2xl max-w-lg w-full m-4 max-h-[85vh] overflow-y-auto" onclick="event.stopPropagation()">
             <div class="p-6">
                 <h3 id="section-modal-title" class="text-xl font-bold mb-4">افزودن بخش جدید</h3>
@@ -266,7 +220,7 @@
     </div>
 
     <!-- Question Modal -->
-    <div id="question-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeQuestionModal()">
+    <div id="question-modal" class="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 hidden" onclick="if(event.target===this) closeQuestionModal()">
         <div class="bg-white rounded-2xl max-w-lg w-full m-4 max-h-[85vh] overflow-y-auto" onclick="event.stopPropagation()">
             <div class="p-6">
                 <h3 id="question-modal-title" class="text-xl font-bold mb-4">افزودن سوال جدید</h3>

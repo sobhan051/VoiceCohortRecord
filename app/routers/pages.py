@@ -29,6 +29,12 @@ async def signup_page():
 @router.get("/login")
 async def login_page():
     """Serve the login page"""
+    return FileResponse(str(STATIC_DIR / "login.html"))
+
+
+@router.get("/dashboard")
+async def dashboard_page():
+    """Serve the dashboard page (user or admin)"""
     return FileResponse(str(STATIC_DIR / "dashboard.html"))
 
 

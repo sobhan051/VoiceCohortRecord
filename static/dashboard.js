@@ -1,28 +1,52 @@
-// dashboard.js – Login, user dashboard, and admin dashboard with full CRUD
+// dashboard.js – Dashboard logic (user + admin panels)
+// This page is only accessible at /dashboard — login happens at /login
 
 let currentUser = null;
 let adminSection = 'dashboard';
 
-// ---------- Login ----------
-function showLoginError(msg) {
-    const errEl = document.getElementById('login-error');
-    if (!errEl) return;
-    errEl.textContent = msg;
-    errEl.classList.remove('hidden');
-}
+// ---------- Session Restoration ----------
+document.addEventListener('DOMContentLoaded', async () => {
+    // Try to restore session from localStorage
+    const saved = localStorage.getItem('vcr_user');
+    if (!saved) {
+        // No session — redirect to login
+        window.location.href = '/login';
+        return;
+    }
 
-function clearLoginError() {
-    const errEl = document.getElementById('login-error');
-    if (errEl) errEl.classList.add('hidden');
-}
+    let userData;
+    try {
+        userData = JSON.parse(saved);
+    } catch {
+        localStorage.removeItem('vcr_user');
+        window.location.href = '/login';
+        return;
+    }
 
-function showLoginPage() {
-    document.getElementById('login-page').classList.remove('hidden');
-    document.getElementById('dashboard-app').classList.add('hidden');
-}
+    // Verify session is valid with the server
+    try {
+        const res = await fetch(`/api/dashboard?user_id=${userData.user_id}`);
+        const data = await res.json();
+        if (data.error || !data.user) {
+            localStorage.removeItem('vcr_user');
+            window.location.href = '/login';
+            return;
+        }
+
+        // Session valid — show dashboard
+        currentUser = data.user;
+        localStorage.setItem('vcr_user', JSON.stringify(currentUser));
+        enterDashboard(currentUser);
+    } catch (err) {
+        console.warn('Failed to verify session:', err);
+        // Server may be down — show error instead of redirect loop
+        document.getElementById('session-loading').innerHTML =
+            '<div class="text-center"><p class="text-red-500 text-lg mb-2">خطا در اتصال به سرور</p><p class="text-gray-400 text-sm">لطفاً بعداً تلاش کنید</p><a href="/login" class="mt-4 inline-block bg-blue-600 text-white px-6 py-2 rounded-xl">بازگشت به صفحه ورود</a></div>';
+    }
+});
 
 function enterDashboard(user) {
-    document.getElementById('login-page').classList.add('hidden');
+    document.getElementById('session-loading').classList.add('hidden');
     document.getElementById('dashboard-app').classList.remove('hidden');
 
     if (user.role === 2) {
@@ -38,99 +62,10 @@ function enterDashboard(user) {
     }
 }
 
-async function handleLogin() {
-    const errEl = document.getElementById('login-error');
-    const btn = document.getElementById('login-btn');
-    const national = document.getElementById('login-national').value.trim();
-
-    if (!national) {
-        showLoginError('کد ملی الزامی است.');
-        return;
-    }
-
-    btn.disabled = true;
-    btn.textContent = 'در حال ورود...';
-    try {
-        const res = await fetch('/api/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ national_code: national }),
-        });
-        const data = await res.json();
-
-        if (data.error) {
-            showLoginError(data.error);
-            return;
-        }
-
-        currentUser = data.user;
-        // Persist session in localStorage so it survives page reload / server restart
-        localStorage.setItem('vcr_user', JSON.stringify(currentUser));
-        enterDashboard(currentUser);
-    } catch (err) {
-        console.error('Login failed:', err);
-        showLoginError('ارتباط با سرور با مشکل مواجه شد.');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'ورود';
-    }
-}
-
 function handleLogout() {
     currentUser = null;
-    // Clear persisted session
     localStorage.removeItem('vcr_user');
-    document.getElementById('dashboard-app').classList.add('hidden');
-    document.getElementById('user-dashboard').classList.add('hidden');
-    document.getElementById('admin-dashboard').classList.add('hidden');
-    showLoginPage();
-    document.getElementById('login-national').value = '';
-    clearLoginError();
-}
-
-document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('login-form').addEventListener('submit', (e) => {
-        e.preventDefault();
-        handleLogin();
-    });
-
-    // Auto-restore session from localStorage
-    tryRestoreSession();
-});
-
-
-// ---------- Session Persistence (localStorage) ----------
-
-async function tryRestoreSession() {
-    const saved = localStorage.getItem('vcr_user');
-    if (!saved) return;
-
-    let userData;
-    try {
-        userData = JSON.parse(saved);
-    } catch {
-        localStorage.removeItem('vcr_user');
-        return;
-    }
-
-    // Verify the session is still valid (user still exists in DB)
-    try {
-        const res = await fetch(`/api/dashboard?user_id=${userData.user_id}`);
-        const data = await res.json();
-        if (data.error || !data.user) {
-            localStorage.removeItem('vcr_user');
-            return;
-        }
-
-        // Session is valid — restore and update localStorage with fresh data
-        currentUser = data.user;
-        localStorage.setItem('vcr_user', JSON.stringify(currentUser));
-        enterDashboard(currentUser);
-    } catch (err) {
-        // Network error (server restart, temporary outage) — keep the saved session
-        // so it works on next page refresh when the server is back up.
-        console.warn('Failed to verify session (server may be restarting):', err);
-    }
+    window.location.href = '/login';
 }
 
 // ---------- User Dashboard ----------
@@ -182,7 +117,7 @@ async function loadUserDashboard() {
                             <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 hover:shadow-md transition">
                                 <h4 class="font-bold text-gray-800 mb-2">${f.form_name}</h4>
                                 ${f.category ? `<p class="text-sm text-gray-500 mb-4">دسته: ${f.category}</p>` : ''}
-                                <a href="/form" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm transition">شروع پرسشنامه</a>
+                                <a href="/form" onclick="localStorage.setItem('selected_form_id', '${f.form_id}')" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm transition">شروع پرسشنامه</a>
                             </div>`).join('')}
                     </div>
                 </div>`;
@@ -250,69 +185,36 @@ function showAdminSection(section) {
         case 'submissions': loadAdminSubmissions(container); break;
         case 'users': loadAdminUsers(container); break;
         case 'forms': loadAdminForms(container); break;
-        case 'api-logs': loadAdminApiLogs(container); break;
         case 'settings': loadAdminSettings(container); break;
     }
 }
 
 async function loadAdminDashboard(container) {
-    container.innerHTML = '<div class="text-center py-20">در حال بارگذاری آمار...</div>';
+    container.innerHTML = '<div class="text-center py-20">در حال بارگذاری...</div>';
     try {
-        const res = await fetch('/api/admin/stats');
-        const stats = await res.json();
+        const res = await fetch('/api/admin/forms');
+        const forms = await res.json();
         container.innerHTML = `
             <div class="mb-8">
-                <h2 class="text-3xl font-bold text-gray-800">داشبورد مدیریتی</h2>
-                <p class="text-gray-500 mt-2">خلاصه وضعیت سیستم</p>
+                <h2 class="text-3xl font-bold text-gray-800">فرم‌ها</h2>
+                <p class="text-gray-500 mt-2">فرم‌های موجود در سیستم را مشاهده و مدیریت کنید</p>
             </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm">
-                    <div class="flex items-center justify-between">
-                        <div><p class="text-gray-500 text-sm">کل پرسشنامه‌ها</p><p class="text-3xl font-bold text-gray-800 mt-2">${stats.total_submissions}</p></div>
-                        <div class="bg-blue-100 p-3 rounded-full"><span class="text-2xl">📋</span></div>
-                    </div>
-                </div>
-                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm">
-                    <div class="flex items-center justify-between">
-                        <div><p class="text-gray-500 text-sm">تکمیل شده</p><p class="text-3xl font-bold text-green-600 mt-2">${stats.completed_submissions}</p></div>
-                        <div class="bg-green-100 p-3 rounded-full"><span class="text-2xl">✅</span></div>
-                    </div>
-                </div>
-                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm">
-                    <div class="flex items-center justify-between">
-                        <div><p class="text-gray-500 text-sm">کاربران</p><p class="text-3xl font-bold text-gray-800 mt-2">${stats.total_users}</p></div>
-                        <div class="bg-purple-100 p-3 rounded-full"><span class="text-2xl">👥</span></div>
-                    </div>
-                </div>
-                <div class="stat-card bg-white rounded-2xl p-6 shadow-sm">
-                    <div class="flex items-center justify-between">
-                        <div><p class="text-gray-500 text-sm">درخواست‌های AI</p><p class="text-3xl font-bold text-gray-800 mt-2">${stats.total_api_calls}</p></div>
-                        <div class="bg-orange-100 p-3 rounded-full"><span class="text-2xl">🤖</span></div>
-                    </div>
-                </div>
-            </div>
-            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div class="bg-white rounded-2xl p-6 shadow-sm">
-                    <h3 class="font-bold text-gray-800 mb-4">آمار تکمیل پرسشنامه</h3>
-                    <div class="space-y-3">
-                        <div>
-                            <div class="flex justify-between text-sm mb-1"><span>تکمیل شده</span><span>${stats.completed_submissions}</span></div>
-                            <div class="w-full bg-gray-200 rounded-full h-2"><div class="bg-green-500 rounded-full h-2" style="width: ${stats.total_submissions > 0 ? (stats.completed_submissions / stats.total_submissions * 100) : 0}%"></div></div>
+            ${forms.length === 0 ? '<div class="bg-white rounded-2xl p-8 shadow-sm text-center"><p class="text-gray-400">هنوز فرمی تعریف نشده است</p></div>' :
+            `<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                ${forms.map(f => `
+                    <a href="/form?form_id=${f.form_id}" class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 hover:border-blue-200 hover:shadow-md transition block">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="bg-blue-100 p-3 rounded-xl">
+                                <span class="text-2xl">📝</span>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="font-bold text-gray-800">${f.form_name}</p>
+                                ${f.category ? `<p class="text-xs text-gray-500 mt-1">${f.category}</p>` : ''}
+                            </div>
                         </div>
-                        <div>
-                            <div class="flex justify-between text-sm mb-1"><span>پیش‌نویس</span><span>${stats.draft_submissions}</span></div>
-                            <div class="w-full bg-gray-200 rounded-full h-2"><div class="bg-yellow-500 rounded-full h-2" style="width: ${stats.total_submissions > 0 ? (stats.draft_submissions / stats.total_submissions * 100) : 0}%"></div></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="bg-white rounded-2xl p-6 shadow-sm">
-                    <h3 class="font-bold text-gray-800 mb-4">اطلاعات سیستم</h3>
-                    <div class="space-y-2 text-sm">
-                        <div class="flex justify-between py-2 border-b"><span class="text-gray-600">میانگین دقت AI:</span><span class="font-bold">${stats.avg_confidence}%</span></div>
-                        <div class="flex justify-between py-2 border-b"><span class="text-gray-600">پرسشنامه‌های هفته اخیر:</span><span class="font-bold">${stats.recent_submissions}</span></div>
-                    </div>
-                </div>
-            </div>`;
+                        <div class="text-blue-600 text-sm font-medium">باز کردن فرم →</div>
+                    </a>`).join('')}
+            </div>`}`;
     } catch (e) { container.innerHTML = '<div class="bg-red-50 text-red-600 p-4 rounded-xl">خطا در بارگذاری اطلاعات</div>'; }
 }
 
@@ -496,7 +398,6 @@ function showAddUserModal(userData) {
 }
 
 function editAdminUser(userId) {
-    // We need to fetch user data first - reuse users endpoint
     fetch('/api/admin/users').then(r => r.json()).then(users => {
         const user = users.find(u => u.user_id === userId);
         if (user) showAddUserModal(user);
@@ -622,7 +523,6 @@ function renderFormsView(container, forms) {
 async function selectForm(formId) {
     selectedFormId = formId;
     selectedSectionId = null;
-    // Re-render forms column to highlight selection, then load sections
     const res = await fetch('/api/admin/forms');
     const forms = await res.json();
     const container = document.getElementById('admin-content');
@@ -656,7 +556,6 @@ async function loadFormSections() {
 
 async function selectSection(sectionId) {
     selectedSectionId = sectionId;
-    // Reload sections to update highlighting
     await loadFormSections();
     await loadSectionQuestions();
 }
@@ -841,7 +740,7 @@ async function showQuestionModal(questionData) {
     document.getElementById('q-prompt').value = questionData?.manual_prompt || '';
     document.getElementById('q-order').value = questionData?.sort_order ?? 0;
 
-    // Populate section dropdown with all sections from the selected form
+    // Populate section dropdown — only sections belonging to the selected form
     const sectionSelect = document.getElementById('question-section-id');
     const targetFormId = selectedFormId;
     try {
@@ -928,50 +827,6 @@ async function deleteQuestion(questionId) {
     } catch (e) { alert('خطا در حذف سوال'); }
 }
 
-// ---------- API Logs ----------
-async function loadAdminApiLogs(container) {
-    container.innerHTML = '<div class="text-center py-20">در حال بارگذاری لاگ‌ها...</div>';
-    try {
-        const res = await fetch('/api/admin/api-logs?limit=100');
-        const logs = await res.json();
-        let html = `
-            <div class="mb-8">
-                <h2 class="text-3xl font-bold text-gray-800">لاگ‌های هوش مصنوعی</h2>
-                <p class="text-gray-500 mt-2">مشاهده تمام درخواست‌های ارسال شده به API</p>
-            </div>
-            <div class="bg-white rounded-2xl shadow-sm overflow-hidden">
-                <div class="overflow-x-auto">
-                    <table class="w-full">
-                        <thead class="bg-gray-50 border-b">
-                            <tr>
-                                <th class="text-right p-4 text-sm font-bold text-gray-600">زمان</th>
-                                <th class="text-right p-4 text-sm font-bold text-gray-600">بخش</th>
-                                <th class="text-right p-4 text-sm font-bold text-gray-600">مدل</th>
-                                <th class="text-right p-4 text-sm font-bold text-gray-600">توکن‌ها</th>
-                                <th class="text-right p-4 text-sm font-bold text-gray-600">پرامپت</th>
-                                <th class="text-right p-4 text-sm font-bold text-gray-600">پاسخ</th>
-                            </tr>
-                        </thead>
-                        <tbody>`;
-        if (logs.length === 0) {
-            html += `<tr><td colspan="6" class="text-center p-8 text-gray-500">هیچ لاگی یافت نشد</td></tr>`;
-        } else {
-            logs.forEach(log => {
-                html += `
-                    <tr class="border-b hover:bg-gray-50 transition">
-                        <td class="p-4 text-sm">${new Date(log.created_at).toLocaleString('fa-IR')}</td>
-                        <td class="p-4 text-sm">${log.section_key || '-'}</td>
-                        <td class="p-4 text-sm">${log.model_name || '-'}</td>
-                        <td class="p-4 text-sm">${log.tokens_used || '-'}</td>
-                        <td class="p-4 text-sm max-w-xs truncate" title="${log.prompt_preview || ''}">${log.prompt_preview || '-'}</td>
-                        <td class="p-4 text-sm max-w-xs truncate" title="${log.response_preview || ''}">${log.response_preview || '-'}</td>
-                    </tr>`;
-            });
-        }
-        html += `</tbody></table></div></div>`;
-        container.innerHTML = html;
-    } catch (e) { container.innerHTML = '<div class="bg-red-50 text-red-600 p-4 rounded-xl">خطا در بارگذاری</div>'; }
-}
 
 // ---------- Settings ----------
 function loadAdminSettings(container) {
@@ -1009,7 +864,6 @@ function saveAdminSettings() {
 }
 
 // ---------- Expose to global scope ----------
-window.handleLogin = handleLogin;
 window.handleLogout = handleLogout;
 window.showAdminSection = showAdminSection;
 window.viewAdminSubmission = viewAdminSubmission;
@@ -1034,5 +888,4 @@ window.showQuestionModal = showQuestionModal;
 window.editQuestion = editQuestion;
 window.closeQuestionModal = closeQuestionModal;
 window.deleteQuestion = deleteQuestion;
-window.tryRestoreSession = tryRestoreSession;
 window.saveAdminSettings = saveAdminSettings;

@@ -25,7 +25,13 @@ let sectionProgressData = {};     // { section_key: { name_fa, total, answered }
 
 document.addEventListener('DOMContentLoaded', async () => {
     try {
-        const res = await fetch('/get-form-structure');
+        // Pass form_id — prefer URL param, fall back to localStorage
+        const urlParams = new URLSearchParams(window.location.search);
+        const selectedFormId = urlParams.get('form_id') || localStorage.getItem('selected_form_id') || '';
+        // Persist to localStorage so start-submission can use it too
+        if (selectedFormId) localStorage.setItem('selected_form_id', selectedFormId);
+        const url = selectedFormId ? `/get-form-structure?form_id=${selectedFormId}` : '/get-form-structure';
+        const res = await fetch(url);
         const sections = await res.json();
         renderForm(sections);
         updateQuestionVisibility();
@@ -84,7 +90,7 @@ function getBestAudioMimeType() {
 // ---------- Session-based Patient / Submission gate ----------
 function changePatient() {
     // Redirect to the dashboard to pick a different user
-    window.location.href = '/login';
+    window.location.href = '/dashboard';
 }
 
 async function autoStartFromSession() {
@@ -121,10 +127,14 @@ async function autoStartFromSession() {
 
     // Auto-start submission using the user_id from session
     try {
+        // Include form_id if stored (from dashboard form selection)
+        const selectedFormId = localStorage.getItem('selected_form_id') || null;
+        const body = { user_id: userData.user_id };
+        if (selectedFormId) body.form_id = selectedFormId;
         const res = await fetch('/start-submission', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_id: userData.user_id })
+            body: JSON.stringify(body)
         });
         const data = await res.json();
         if (data.error) {
