@@ -1,0 +1,20 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: vcr-web
+    runtime: docker
+    healthCheckPath: /
+    envVars:
+      - key: GEMINI_API_KEYS
+        sync: false # set in the dashboard: comma-separated Gemini API keys
+      - key: GENAI_FALLBACK_MODELS
+        value: gemini-2.5-flash,gemini-2.0-flash
+      - key: DATABASE_URL
+        fromDatabase:
+          name: vcr-db
+          property: connectionString
+
+databases:
+  - name: vcr-db
+    databaseName: vcr
+    user: vcr
