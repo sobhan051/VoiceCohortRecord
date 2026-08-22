@@ -21,8 +21,8 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Default Gemini models per call type.
-AUDIO_MODEL = "gemini-2.5-flash"
-ANOMALY_MODEL = "gemini-2.5-flash"
+AUDIO_MODEL = "gemini-3.5-flash"
+ANOMALY_MODEL = "gemini-3.5-flash"
 
 # Outbound HTTP timeout for Gemini calls (milliseconds). Audio extraction over a
 # proxy can take a while; too low a value times out a healthy request and forces

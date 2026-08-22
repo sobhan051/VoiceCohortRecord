@@ -1,6 +1,7 @@
 """Questionnaire flow: form structure, voice processing, anomaly checks,
 and submission lifecycle."""
 import os
+import re
 import shutil
 import uuid
 from datetime import datetime
@@ -295,9 +296,11 @@ async def start_submission(
     for r in saved_responses:
         if r.extracted_value is None:
             continue
-        answers[r.v_code] = r.extracted_value
+        # Use indexed key for grouped responses (e.g., D1_0, D1_1)
+        answer_key = f"{r.v_code}_{r.group_index}" if r.group_index is not None else r.v_code
+        answers[answer_key] = r.extracted_value
         if r.ai_confidence is not None:
-            confidence[r.v_code] = r.ai_confidence
+            confidence[answer_key] = r.ai_confidence
         sk = section_key_by_qid.get(r.question_id)
         if sk:
             answered_sections.add(sk)
@@ -345,20 +348,42 @@ async def complete_submission(
     for v_code, value in answers.items():
         if value is None or value == "":
             continue
-        q = questions.get(v_code)
-        existing = db.query(models.Response).filter(
-            and_(
-                models.Response.submission_id == sub_id,
-                models.Response.v_code == v_code,
+
+        # Handle grouped v_codes (e.g., "D1_0", "D1_1")
+        match = re.match(r'^(.+?)_(\d+)$', v_code)
+        if match:
+            base_vcode = match.group(1)
+            group_idx = int(match.group(2))
+            q = questions.get(base_vcode)
+            existing = db.query(models.Response).filter(
+                and_(
+                    models.Response.submission_id == sub_id,
+                    models.Response.v_code == base_vcode,
+                    models.Response.group_index == group_idx,
+                )
+            ).first()
+            is_voice = bool(existing.is_voice) if existing and str(existing.extracted_value) == str(value) else False
+            upsert_response(
+                db, sub_id, q, base_vcode, value,
+                is_voice=is_voice,
+                confidence=confidence.get(v_code),
+                group_index=group_idx,
             )
-        ).first()
-        # Don't downgrade a voice answer to manual unless the value actually changed
-        is_voice = bool(existing.is_voice) if existing and str(existing.extracted_value) == str(value) else False
-        upsert_response(
-            db, sub_id, q, v_code, value,
-            is_voice=is_voice,
-            confidence=confidence.get(v_code),
-        )
+        else:
+            q = questions.get(v_code)
+            existing = db.query(models.Response).filter(
+                and_(
+                    models.Response.submission_id == sub_id,
+                    models.Response.v_code == v_code,
+                )
+            ).first()
+            # Don't downgrade a voice answer to manual unless the value actually changed
+            is_voice = bool(existing.is_voice) if existing and str(existing.extracted_value) == str(value) else False
+            upsert_response(
+                db, sub_id, q, v_code, value,
+                is_voice=is_voice,
+                confidence=confidence.get(v_code),
+            )
         saved += 1
 
     submission.status = "completed"
@@ -443,15 +468,31 @@ async def process_voice(
         for v_code, val in extracted_data.items():
             if val is None:
                 continue
-            q = db.query(models.Question).filter(
-                models.Question.v_code == v_code
-            ).first()
+
+            # Handle indexed v_codes (e.g. "D1_0")
+            group_idx = None
+            match = re.match(r'^(.+?)_(\d+)$', v_code)
+            if match:
+                base_vcode = match.group(1)
+                group_idx = int(match.group(2))
+                q = db.query(models.Question).filter(
+                    models.Question.v_code == base_vcode
+                ).first()
+            else:
+                q = db.query(models.Question).filter(
+                    models.Question.v_code == v_code
+                ).first()
+                # If this is a grouped question, default to group_index=0
+                if q and q.group_pair:
+                    group_idx = 0
+
             if q:
                 upsert_response(
                     db, sub_id, q, v_code, val,
                     transcript=transcript_text,
                     is_voice=True,
                     confidence=confidence_map.get(v_code),
+                    group_index=group_idx,
                 )
 
         db.commit()

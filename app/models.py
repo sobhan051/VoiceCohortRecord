@@ -48,6 +48,7 @@ class Question(Base):
     unit = Column(String(50))
     manual_prompt = Column(Text)
     sort_order = Column(Integer, default=0)
+    group_pair = Column(String(100), nullable=True)
 
 
 class Submission(Base):
@@ -72,6 +73,7 @@ class Response(Base):
     extracted_value = Column(Text)
     extracted_value_json = Column(JSONB)              # if you need structured data
     ai_confidence = Column(Float)                     # if you plan to store confidence
+    group_index = Column(Integer, nullable=True)
     processed_at = Column(DateTime, server_default=func.now())
 
 

@@ -244,9 +244,267 @@ function updateQuestionVisibility() {
 }
 
 // ---------- Rendering ----------
+// ---------- Grouped (multi-entry) Questions ----------
+let groupEntryCounts = {};
+let groupedQuestionsMap = {}; // { group_pair: [question_objects] }
+let groupedQuestionsSections = {}; // { group_pair: section_key }
+
+function extractGroupedQuestions(sections) {
+    groupedQuestionsMap = {};
+    groupedQuestionsSections = {};
+    sections.forEach(section => {
+        // Collect grouped questions but DON'T remove them from section.questions
+        // Progress counting needs the full count
+        (section.questions || []).forEach(q => {
+            if (q.group_pair) {
+                if (!groupedQuestionsMap[q.group_pair]) groupedQuestionsMap[q.group_pair] = [];
+                groupedQuestionsMap[q.group_pair].push(q);
+                groupedQuestionsSections[q.group_pair] = section.section_key;
+            }
+        });
+    });
+}
+
+function renderGroupContainer(groupPair) {
+    const questions = groupedQuestionsMap[groupPair] || [];
+    if (!groupEntryCounts[groupPair]) groupEntryCounts[groupPair] = 1;
+    const count = groupEntryCounts[groupPair];
+    let entriesHtml = '';
+    for (let idx = 0; idx < count; idx++) {
+        entriesHtml += renderGroupEntry(groupPair, questions, idx);
+    }
+    const label = questions.length > 0 ? questions[0].question_text_fa.split(' ').slice(0,3).join(' ') : groupPair;
+    return `
+        <div class="md:col-span-2 group-container" id="group-${groupPair}" data-group-pair="${groupPair}">
+            <div class="bg-blue-50 border-2 border-blue-100 rounded-2xl p-4 space-y-4">
+                <div class="flex items-center justify-between mb-2">
+                    <h3 class="text-sm font-bold text-blue-700">${label} — گروه تکراری</h3>
+                    <span class="text-xs text-blue-500 bg-blue-100 px-2 py-1 rounded-full" id="group-count-${groupPair}">${count} ردیف</span>
+                </div>
+                <div id="group-entries-${groupPair}" class="space-y-4">
+                    ${entriesHtml}
+                </div>
+                <button type="button" onclick="addGroupEntry('${groupPair}')" 
+                    class="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 font-medium mt-2 transition">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
+                    </svg>
+                    افزودن ردیف جدید
+                </button>
+            </div>
+        </div>
+    `;
+}
+
+function renderGroupEntry(groupPair, questions, idx) {
+    const fields = questions.map(q => {
+        const indexedVcode = q.v_code + '_' + idx;
+        return renderQuestion({ ...q, v_code: indexedVcode, _groupPair: groupPair, _groupIdx: idx });
+    }).join('');
+    const removeBtn = idx > 0 ? `
+        <button type="button" onclick="removeGroupEntry('${groupPair}', ${idx})"
+            class="absolute top-2 left-2 text-red-400 hover:text-red-600 transition p-1">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+        </button>` : '';
+    return `
+        <div class="group-entry border border-gray-200 rounded-xl p-3 bg-white relative" data-group="${groupPair}" data-idx="${idx}">
+            ${removeBtn}
+            <div class="text-xs text-gray-400 mb-2 font-medium">ردیف ${idx + 1}</div>
+            <div class="grid grid-cols-1 md:grid-cols-${Math.min(questions.length, 3)} gap-x-6 gap-y-4">
+                ${fields}
+            </div>
+        </div>
+    `;
+}
+
+function addGroupEntry(groupPair) {
+    const entries = document.querySelectorAll(`.group-entry[data-group="${groupPair}"]`);
+    const lastEntry = entries[entries.length - 1];
+    if (lastEntry) {
+        const inputs = lastEntry.querySelectorAll('input[data-vcode], select[data-vcode], textarea[data-vcode]');
+        const allFilled = Array.from(inputs).every(inp => {
+            if (inp.type === 'radio' || inp.type === 'checkbox') {
+                // For radio/checkbox, at least one in the group must be checked
+                const name = inp.name;
+                const groupInputs = lastEntry.querySelectorAll(`input[name="${name}"]`);
+                return Array.from(groupInputs).some(gi => gi.checked);
+            }
+            return inp.value && inp.value.trim() !== '';
+        });
+        if (!allFilled) {
+            showToast('لطفاً تمام فیلدهای ردیف قبلی را پر کنید');
+            return;
+        }
+    }
+
+    groupEntryCounts[groupPair] = (groupEntryCounts[groupPair] || 1) + 1;
+    const newIdx = groupEntryCounts[groupPair] - 1;
+    const questions = groupedQuestionsMap[groupPair] || [];
+    const container = document.getElementById('group-entries-' + groupPair);
+    if (!container) return;
+
+    const tmpDiv = document.createElement('div');
+    tmpDiv.innerHTML = renderGroupEntry(groupPair, questions, newIdx);
+    container.appendChild(tmpDiv.firstElementChild);
+
+    const counter = document.getElementById('group-count-' + groupPair);
+    if (counter) counter.textContent = groupEntryCounts[groupPair] + ' ردیف';
+    updateProgressPanel();
+}
+
+function addGroupEntrySilent(groupPair) {
+    groupEntryCounts[groupPair] = (groupEntryCounts[groupPair] || 1) + 1;
+    const newIdx = groupEntryCounts[groupPair] - 1;
+    const questions = groupedQuestionsMap[groupPair] || [];
+    const container = document.getElementById('group-entries-' + groupPair);
+    if (!container) return;
+    const tmpDiv = document.createElement('div');
+    tmpDiv.innerHTML = renderGroupEntry(groupPair, questions, newIdx);
+    container.appendChild(tmpDiv.firstElementChild);
+    const counter = document.getElementById('group-count-' + groupPair);
+    if (counter) counter.textContent = groupEntryCounts[groupPair] + ' ردیف';
+}
+
+function removeGroupEntry(groupPair, idx) {
+    const entries = document.querySelectorAll(`.group-entry[data-group="${groupPair}"]`);
+    if (entries.length <= 1) {
+        showToast('حداقل یک ردیف الزامی است');
+        return;
+    }
+    const entry = document.querySelector(`.group-entry[data-group="${groupPair}"][data-idx="${idx}"]`);
+    if (entry) entry.remove();
+    const remaining = document.querySelectorAll(`.group-entry[data-group="${groupPair}"]`);
+    groupEntryCounts[groupPair] = remaining.length;
+    const counter = document.getElementById('group-count-' + groupPair);
+    if (counter) counter.textContent = remaining.length + ' ردیف';
+    updateProgressPanel();
+}
+
+function collectGroupedAnswers() {
+    document.querySelectorAll('.group-entry').forEach(entry => {
+        const groupPair = entry.dataset.group;
+        const idx = parseInt(entry.dataset.idx);
+        entry.querySelectorAll('[data-vcode]').forEach(inp => {
+            const rawVcode = inp.dataset.vcode;
+            if (rawVcode && /_\d+$/.test(rawVcode)) {
+                if (inp.type === 'radio') {
+                    if (inp.checked) sessionContext[rawVcode] = inp.value;
+                } else if (inp.type === 'checkbox') {
+                    const allChecked = entry.querySelectorAll(`input[type="checkbox"][data-vcode="${rawVcode}"]:checked`);
+                    sessionContext[rawVcode] = Array.from(allChecked).map(c => c.value).join(',');
+                } else {
+                    sessionContext[rawVcode] = inp.value;
+                }
+            }
+        });
+    });
+}
+
+function applyGroupedAiResults(data) {
+    // First pass: figure out how many rows each group needs
+    const groupMaxIdx = {}; // { groupPair: maxIdx }
+
+    Object.entries(data).forEach(([vcode, val]) => {
+        if (val === null || val === undefined || val === '') return;
+        // Find which group this vcode belongs to
+        let baseVcode = vcode;
+        let idx = 0;
+        const match = vcode.match(/^(.+?)_(\d+)$/);
+        if (match) {
+            baseVcode = match[1];
+            idx = parseInt(match[2]);
+        }
+        // Check if this base vcode is in any group
+        for (const [gp, questions] of Object.entries(groupedQuestionsMap)) {
+            if (questions.some(q => q.v_code === baseVcode)) {
+                if (!groupMaxIdx[gp] || idx > groupMaxIdx[gp]) groupMaxIdx[gp] = idx;
+                break;
+            }
+        }
+    });
+
+    // Auto-add rows for groups that need more than currently exist
+    Object.entries(groupMaxIdx).forEach(([gp, maxIdx]) => {
+        const currentCount = groupEntryCounts[gp] || 1;
+        for (let i = currentCount; i <= maxIdx; i++) {
+            addGroupEntrySilent(gp);
+        }
+    });
+
+    // Second pass: fill in the values
+    Object.entries(data).forEach(([vcode, val]) => {
+        if (val === null || val === undefined || val === '') return;
+        let baseVcode = vcode;
+        let idx = 0;
+        const match = vcode.match(/^(.+?)_(\d+)$/);
+        if (match) {
+            baseVcode = match[1];
+            idx = parseInt(match[2]);
+        }
+        // If plain vcode belongs to a group, map to idx=0
+        let targetVcode = vcode;
+        for (const [gp, questions] of Object.entries(groupedQuestionsMap)) {
+            if (questions.some(q => q.v_code === baseVcode)) {
+                if (!match) targetVcode = baseVcode + '_0';
+                break;
+            }
+        }
+        const inputs = document.querySelectorAll(`[data-vcode="${targetVcode}"]`);
+        inputs.forEach(input => {
+            if (input.type === 'radio') {
+                if (input.value == val) {
+                    input.checked = true;
+                    const lbl = input.closest('label');
+                    if (lbl) lbl.classList.add('ai-updated');
+                    setTimeout(() => { if (lbl) lbl.classList.remove('ai-updated'); }, 3000);
+                }
+            } else if (input.type === 'checkbox') {
+                // Not expected for grouped, but handle anyway
+                input.checked = true;
+                input.classList.add('ai-updated');
+                setTimeout(() => input.classList.remove('ai-updated'), 3000);
+            } else {
+                input.value = String(val);
+                input.classList.add('ai-updated');
+                setTimeout(() => input.classList.remove('ai-updated'), 3000);
+            }
+        });
+        // Dispatch change on first matching input to sync sessionContext
+        if (inputs.length > 0) {
+            inputs[0].dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    });
+}
+
+function getIndexedGroupAnswers(groupPair) {
+    const questions = groupedQuestionsMap[groupPair] || [];
+    const results = [];
+    const count = groupEntryCounts[groupPair] || 1;
+    for (let idx = 0; idx < count; idx++) {
+        const entry = {};
+        let hasValue = false;
+        questions.forEach(q => {
+            const vc = q.v_code + '_' + idx;
+            const val = sessionContext[vc];
+            if (val !== undefined && val !== null && val !== '') {
+                entry[q.v_code] = val;
+                hasValue = true;
+            }
+        });
+        if (hasValue) results.push(entry);
+    }
+    return results;
+}
+
+
 function renderForm(sections) {
     const container = document.getElementById('form-container');
     container.innerHTML = '';
+
+    // Extract grouped questions before rendering
+    extractGroupedQuestions(sections);
 
     // Build section progress data
     sectionProgressData = {};
@@ -260,6 +518,9 @@ function renderForm(sections) {
             total: section.questions ? section.questions.length : 0,
             answered: 0
         };
+
+        // Now remove grouped questions from rendering (already counted above)
+        section.questions = (section.questions || []).filter(q => !q.group_pair);
 
         const sectHtml = `
             <section class="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-gray-100"
@@ -281,12 +542,14 @@ function renderForm(sections) {
                     </button>
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
+                    ${Object.keys(groupedQuestionsMap).filter(gp => groupedQuestionsSections[gp] === section.section_key).map(gp => renderGroupContainer(gp)).join('')}
                     ${section.questions.map(q => renderQuestion(q)).join('')}
                 </div>
             </section>
         `;
         container.insertAdjacentHTML('beforeend', sectHtml);
     });
+
 }
 
 // ---------- Progress Panel ----------
@@ -301,6 +564,8 @@ function updateProgressPanel() {
         sectionEl.querySelectorAll('[data-vcode]').forEach(input => {
             const vcode = input.dataset.vcode;
             if (!vcode || countedVcodes.has(vcode)) return;
+            // Skip indexed/grouped vcodes (e.g. D1__1, D1__2) — handled separately below
+            if (/_\d+$/.test(vcode)) return;
             countedVcodes.add(vcode);
             if (input.type === 'checkbox') {
                 const checked = sectionEl.querySelectorAll(
@@ -315,6 +580,19 @@ function updateProgressPanel() {
             } else if (input.value && input.value.trim() !== '') {
                 answered++;
             }
+        });
+        // Count grouped answers — only the first row (idx=0) counts toward progress
+        Object.entries(groupedQuestionsMap).forEach(([gp, questions]) => {
+            if (groupedQuestionsSections[gp] !== sectionKey) return;
+            questions.forEach(q => {
+                const vc = q.v_code + '_0';
+                if (countedVcodes.has(vc)) return;
+                countedVcodes.add(vc);
+                const val = sessionContext[vc];
+                if (val !== undefined && val !== null && val !== '') {
+                    answered++;
+                }
+            });
         });
         sectionProgressData[sectionKey].answered = answered;
     });
@@ -641,10 +919,20 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
         }
 
         if (result.data) {
-            // Update session context
+            // Update session context — map plain grouped v_codes to __0
             Object.entries(result.data).forEach(([vcode, val]) => {
                 if (val !== null && val !== undefined) {
-                    sessionContext[vcode] = String(val);
+                    let ctxKey = vcode;
+                    if (!/_\d+$/.test(vcode)) {
+                        // Check if this plain vcode belongs to a group
+                        for (const [gp, qs] of Object.entries(groupedQuestionsMap)) {
+                            if (qs.some(q => q.v_code === vcode)) {
+                                ctxKey = vcode + '_0';
+                                break;
+                            }
+                        }
+                    }
+                    sessionContext[ctxKey] = String(val);
                 }
             });
 
@@ -652,16 +940,35 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
             if (result.confidence) {
                 Object.entries(result.confidence).forEach(([vcode, conf]) => {
                     if (conf !== null && conf !== undefined) {
-                        sessionConfidence[vcode] = conf;
+                        let ctxKey = vcode;
+                        if (!/_\d+$/.test(vcode)) {
+                            for (const [gp, qs] of Object.entries(groupedQuestionsMap)) {
+                                if (qs.some(q => q.v_code === vcode)) {
+                                    ctxKey = vcode + '_0';
+                                    break;
+                                }
+                            }
+                        }
+                        sessionConfidence[ctxKey] = conf;
                     }
                 });
             }
 
-            // Track why each field's confidence is below 1 — passed forward
-            // to the anomaly checks so they can pay extra attention.
+            // Track why each field's confidence is below 1
             if (result.confidence_reasons) {
                 Object.entries(result.confidence_reasons).forEach(([vcode, reason]) => {
-                    if (reason) sessionConfidenceReasons[vcode] = String(reason);
+                    if (reason) {
+                        let ctxKey = vcode;
+                        if (!/_\d+$/.test(vcode)) {
+                            for (const [gp, qs] of Object.entries(groupedQuestionsMap)) {
+                                if (qs.some(q => q.v_code === vcode)) {
+                                    ctxKey = vcode + '_0';
+                                    break;
+                                }
+                            }
+                        }
+                        sessionConfidenceReasons[ctxKey] = String(reason);
+                    }
                 });
             }
 
@@ -850,7 +1157,12 @@ function toggleWarningPanel() {
 
 // ---------- Apply AI results (unchanged) ----------
 function applyAiResults(data) {
+    // Handle grouped (indexed) answers
+    applyGroupedAiResults(data);
+
     Object.keys(data).forEach(vCode => {
+        // Skip grouped v_codes (already handled above)
+        if (/_\d+$/.test(vCode)) return;
         const val = data[vCode];
         if (val === null || val === undefined) return;
 
@@ -906,6 +1218,9 @@ function resetButtonUI(sectionKey) {
 document.addEventListener('change', function(event) {
     const input = event.target;
     if (!input.dataset.vcode) return;
+
+    // Collect grouped answers first
+    collectGroupedAnswers();
 
     const vcode = input.dataset.vcode;
     let value;
@@ -975,12 +1290,28 @@ async function submitFinalForm() {
             return;
         }
 
+        // Collect grouped answers before submit
+        collectGroupedAnswers();
+
+        // Build answer payload — group indexed keys under their base v_code
+        const answersPayload = {};
+        Object.entries(sessionContext).forEach(([key, val]) => {
+            const match = key.match(/^(.+?)_(\d+)$/);
+            if (match) {
+                // Grouped: send as { base_vcode: [val0, val1, ...], group_pairs: { base_vcode: group_pair } }
+                // Actually, keep indexed keys so backend knows the group structure
+                answersPayload[key] = val;
+            } else {
+                answersPayload[key] = val;
+            }
+        });
+
         const res = await fetch('/complete-submission', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 submission_id: currentSubmissionId,
-                answers: sessionContext,
+                answers: answersPayload,
                 confidence: sessionConfidence,
             })
         });

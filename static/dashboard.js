@@ -739,6 +739,7 @@ async function showQuestionModal(questionData) {
     document.getElementById('q-options').value = questionData?.coding_options ? JSON.stringify(questionData.coding_options, null, 2) : '';
     document.getElementById('q-prompt').value = questionData?.manual_prompt || '';
     document.getElementById('q-order').value = questionData?.sort_order ?? 0;
+    document.getElementById('q-group-pair').value = questionData?.group_pair || '';
 
     // Populate section dropdown — only sections belonging to the selected form
     const sectionSelect = document.getElementById('question-section-id');
@@ -802,6 +803,7 @@ document.getElementById('question-form').addEventListener('submit', async (e) =>
         unit: document.getElementById('q-unit').value,
         manual_prompt: document.getElementById('q-prompt').value,
         sort_order: parseInt(document.getElementById('q-order').value) || 0,
+        group_pair: document.getElementById('q-group-pair').value || null,
     };
     try {
         let res;

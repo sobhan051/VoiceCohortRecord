@@ -365,8 +365,19 @@ class PromptGenerator:
         data_props = {}
         conf_props = {}
         reason_props = {}
+        # Group questions by group_pair so we can add indexed keys
+        grouped = {}  # group_pair -> list of questions
+        for q in questions:
+            if q.group_pair:
+                grouped.setdefault(q.group_pair, []).append(q)
+
+        MAX_GROUP_ENTRIES = 6
+        # Track which vcodes are the base (non-indexed) ones for required lists
+        base_vcodes = set()
+
         for q in questions:
             vc = q.v_code
+            base_vcodes.add(vc)
             data_props[vc] = {
                 "type": "string",
                 "nullable": True,
@@ -384,6 +395,28 @@ class PromptGenerator:
                 "description": f"Reason why confidence is less than 1 for {vc}. Empty string if confidence is 1.",
             }
 
+        # Add indexed keys for grouped questions (M1_1, M3_1, etc.) as OPTIONAL
+        for gp, gp_questions in grouped.items():
+            for idx in range(1, MAX_GROUP_ENTRIES):
+                for q in gp_questions:
+                    vc_idx = f"{q.v_code}_{idx}"
+                    data_props[vc_idx] = {
+                        "type": "string",
+                        "nullable": True,
+                        "description": f"Additional entry {idx+1} for {q.v_code} (group: {gp})",
+                    }
+                    conf_props[vc_idx] = {
+                        "type": "number",
+                        "nullable": True,
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": f"Confidence for {vc_idx}",
+                    }
+                    reason_props[vc_idx] = {
+                        "type": "string",
+                        "description": f"Reason for {vc_idx}. Empty string if confidence is 1.",
+                    }
+
         schema = {
             "type": "object",
             "properties": {
@@ -391,17 +424,17 @@ class PromptGenerator:
                 "data": {
                     "type": "object",
                     "properties": data_props,
-                    "required": list(data_props.keys()),
+                    "required": list(base_vcodes),
                 },
                 "confidence": {
                     "type": "object",
                     "properties": conf_props,
-                    "required": list(conf_props.keys()),
+                    "required": list(base_vcodes),
                 },
                 "confidence_reasons": {
                     "type": "object",
                     "properties": reason_props,
-                    "required": list(reason_props.keys()),
+                    "required": list(base_vcodes),
                 },
             },
             "required": ["transcript", "data", "confidence", "confidence_reasons"],
@@ -412,6 +445,12 @@ class PromptGenerator:
     @staticmethod
     def generate_section_prompt(questions):
         specs = []
+        # Detect grouped questions
+        grouped = {}  # group_pair -> list of v_codes
+        for q in questions:
+            if q.group_pair:
+                grouped.setdefault(q.group_pair, []).append(q)
+
         for q in questions:
             if q.manual_prompt:
                 specs.append(f"CODE {q.v_code}: {q.manual_prompt}")
@@ -420,6 +459,18 @@ class PromptGenerator:
             q_type = q.response_type
             q_text = q.question_text_fa or ""
             unit = q.unit or ""
+            group_note = ""
+            if q.group_pair:
+                partners = grouped[q.group_pair]
+                partner_codes = [p.v_code for p in partners if p.v_code != q.v_code]
+                group_note = (
+                    f" [GROUPED: '{q.group_pair}' — this question can have multiple answers. "
+                    f"If the speaker mentions multiple items, extract each as {q.v_code}_0, {q.v_code}_1, etc. "
+                    f"Group partners: {', '.join(partner_codes)}. Use the same index for each partner. "
+                    f"IMPORTANT: Only return entries for items actually mentioned. Do NOT return null for unused indices. "
+                    f"If only 1 medicine is mentioned, return only {q.v_code} (plain, no index). "
+                    f"If 2 medicines are mentioned, return {q.v_code} and {q.v_code}_1 only."
+                )
 
             if q_type == "MultiSelect":
                 if q.coding_options:
@@ -439,7 +490,7 @@ class PromptGenerator:
                 else:
                     rule = "Return a comma-separated list of codes mentioned. If none, return null."
                 specs.append(
-                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}"
+                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}{group_note}"
                 )
 
             elif q_type in ("Categorical", "Dichotomous"):
@@ -457,7 +508,7 @@ class PromptGenerator:
                 else:
                     rule = "Return the code exactly as heard. If missing, return null."
                 specs.append(
-                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}"
+                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}{group_note}"
                 )
 
             elif q_type in ("Numeric", "Continuous"):
@@ -473,24 +524,24 @@ class PromptGenerator:
                 else:
                     rule = "Extract the numeric value. Remove any spoken unit. If missing, return null."
                 specs.append(
-                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}"
+                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}{group_note}"
                 )
 
             elif q_type == "Date":
                 rule = "Format as YYYY-MM-DD. If only year, use YYYY-01-01. If missing, return null."
                 specs.append(
-                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}"
+                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}{group_note}"
                 )
 
             elif q_type == "Text":
                 rule = "Return the exact answer phrase. If missing, return null."
                 specs.append(
-                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}"
+                    f"CODE {q.v_code} | Question: {q_text} | Rule: {rule}{group_note}"
                 )
 
             else:
                 specs.append(
-                    f"CODE {q.v_code} | Question: {q_text} | Type: {q_type}. Extract the value, return null if missing."
+                    f"CODE {q.v_code} | Question: {q_text} | Type: {q_type}. Extract the value, return null if missing.{group_note}"
                 )
 
         prompt = (
@@ -562,7 +613,10 @@ class PromptGenerator:
         response = _run_with_failover(_call)
         
         print("\n=== RAW RESPONSE ===")
-        print(response.text[:500])  # Print first 500 chars
+        try:
+            print(json.dumps(json.loads(response.text), indent=2, ensure_ascii=False))
+        except Exception:
+            print(response.text)
         print("=== END RAW ===\n")
         
         return json.loads(response.text)

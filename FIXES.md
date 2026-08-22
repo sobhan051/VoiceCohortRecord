@@ -3,4 +3,4 @@
 - [x] Find proxy for Gemini (WebShare)
 - [ ] Fix(finetune) audio processing configs if needed 
 - [ ] change the bitrate to 64K if needed 
-- [ ] pill names more than one fix (داروهای مصرفی)
+- [x] pill names more than one fix (داروهای مصرفی)
