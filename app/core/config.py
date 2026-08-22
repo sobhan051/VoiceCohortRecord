@@ -24,6 +24,14 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 AUDIO_MODEL = "gemini-3.5-flash"
 ANOMALY_MODEL = "gemini-3.5-flash"
 
+# Models tried (in order) when the primary model returns transient overload
+# ("high demand", 503/500). Full chain per call: [primary] + FALLBACK_MODELS.
+FALLBACK_MODELS = [
+    m.strip()
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.0-flash").split(",")
+    if m.strip()
+]
+
 # Outbound HTTP timeout for Gemini calls (milliseconds). Audio extraction over a
 # proxy can take a while; too low a value times out a healthy request and forces
 # the field worker to re-record. Tunable via env.

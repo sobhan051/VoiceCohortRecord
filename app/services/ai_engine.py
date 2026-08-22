@@ -93,8 +93,31 @@ def _classify(err):
     return "fatal"
 
 
-def _run_with_failover(call):
-    """Run ``call(client)`` against the configured API keys with retry.
+def _run_with_failover(call, primary):
+    """Run ``call(client, model)`` across a chain of models and API keys.
+
+    Key rotation happens first (one shot per key, then bounded overload
+    retries — see ``_try_keys``). Only when every key failed with a
+    *transient* failure (503/500 "high demand", timeout, dropped connection)
+    do we move to the next model in ``[primary] + FALLBACK_MODELS``.
+    Fatal errors still raise immediately; quota exhaustion on every key stops.
+    """
+    models = [primary] + [m for m in config.FALLBACK_MODELS if m != primary]
+    last_err = None
+    for i, model in enumerate(models):
+        try:
+            return _try_keys(call, model)
+        except Exception as e:
+            kind = _classify(e)
+            if kind != "transient" or i == len(models) - 1:
+                raise
+            print(f"[ai_engine] model {model} overloaded; switching to {models[i + 1]}")
+            last_err = e
+    raise last_err
+
+
+def _try_keys(call, model):
+    """One full key-failover pass against a single model.
 
     Behavior (designed to never fire a request "for no reason"):
       * On success, return immediately.
@@ -111,7 +134,7 @@ def _run_with_failover(call):
     keys = config.get_api_keys()
     if not keys:
         # No explicit keys configured: single attempt, env-based client.
-        return call(_build_client(None))
+        return call(_build_client(None), model)
 
     n = len(keys)
     order = _rotator.order(n)
@@ -121,7 +144,7 @@ def _run_with_failover(call):
     # Phase 1 — one shot per key, rotating offset spreads the load.
     for idx in order:
         try:
-            return call(_build_client(keys[idx]))
+            return call(_build_client(keys[idx]), model)
         except Exception as e:
             kind = _classify(e)
             if kind == "fatal":
@@ -142,7 +165,7 @@ def _run_with_failover(call):
         time.sleep(config.GENAI_RETRY_BACKOFF_SECONDS * (attempt + 2))
         key = live[attempt % len(live)]
         try:
-            return call(_build_client(key))
+            return call(_build_client(key), model)
         except Exception as e:
             kind = _classify(e)
             if kind == "fatal":
@@ -254,9 +277,9 @@ class PromptGenerator:
             "Output ONLY a valid JSON array, no other text."
         )
 
-        def _call(client):
+        def _call(client, model):
             return client.models.generate_content(
-                model=config.ANOMALY_MODEL,
+                model=model,
                 contents=[prompt],
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
@@ -265,7 +288,7 @@ class PromptGenerator:
                 ),
             )
 
-        response = _run_with_failover(_call)
+        response = _run_with_failover(_call, config.ANOMALY_MODEL)
 
         print("\n=== ANOMALY RAW RESPONSE ===")
         print(response.text)
@@ -337,9 +360,9 @@ class PromptGenerator:
             "Output ONLY a valid JSON array, no other text."
         )
 
-        def _call(client):
+        def _call(client, model):
             return client.models.generate_content(
-                model=config.ANOMALY_MODEL,
+                model=model,
                 contents=[prompt],
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
@@ -348,7 +371,7 @@ class PromptGenerator:
                 ),
             )
 
-        response = _run_with_failover(_call)
+        response = _run_with_failover(_call, config.ANOMALY_MODEL)
 
         print("\n=== [FINAL ANOMALY RAW RESPONSE] ===")
         print(response.text)
@@ -599,9 +622,9 @@ class PromptGenerator:
         prompt_text = PromptGenerator.generate_section_prompt(questions)
         schema = PromptGenerator._build_response_schema(questions)
         
-        def _call(client):
+        def _call(client, model):
             return client.models.generate_content(
-                model=config.AUDIO_MODEL,
+                model=model,
                 contents=[prompt_text, audio_part],
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
@@ -609,8 +632,8 @@ class PromptGenerator:
                     temperature=0.0,
                 ),
             )
-        
-        response = _run_with_failover(_call)
+
+        response = _run_with_failover(_call, config.AUDIO_MODEL)
         
         print("\n=== RAW RESPONSE ===")
         try:
