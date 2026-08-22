@@ -1,11 +1,12 @@
-# TODO
-- [x] PWA
-- [x] audio process retry & R-R
-- [x] fix ui when asking to resend the audio (timeout)
-- [ ] save audio in database
-- [x] audio cleaning / filtering
-- [x] improve prompts
-- [x] fix questions loading 
+---
+title: VCR — Voice Cohort Record
+emoji: 🎙️
+colorFrom: blue
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+---
 
 # VCR — Voice Cohort Record
 
@@ -18,186 +19,193 @@ for each question, score the confidence of every extracted value, and flag
 clinically suspicious or contradictory responses — all in Persian (RTL).
 
 The form structure is fully database-driven, so questionnaires, sections, and
-questions can be changed without touching code. An admin panel provides
-dashboards, submission browsing, user management, and AI request logs.
-
----
+questions can be changed without touching code. A role-based admin dashboard
+provides platform statistics, submission browsing, user management, and AI
+request logs, with full management APIs for forms, sections, and questions.
 
 ## Features
 
+### Accounts & dashboards
+- **Signup / login** via national code (10 digits) and optional phone number;
+  role-based dashboards (`role=1` user, `role=2` admin).
+- **User dashboard** (`/dashboard`) — personal submissions with completion
+  progress, drafts, and open forms not yet started.
+- **Admin dashboard** (same page, `role=2`) — platform-wide statistics
+  (submissions, users, AI calls, average confidence) plus available forms.
+
+### Management API (`/api/admin/*`)
+- Full CRUD for **forms**, **sections**, and **questions**.
+- Paginated submissions with detail modal, user management
+  (create / update role / delete), AI request logs, and JSON export.
+- No UI of its own beyond the dashboard stats — the endpoints are ready for a
+  dedicated management UI.
+
 ### Voice-based data entry
 - **Per-section voice recording** — each form section has its own "ثبت با صدا"
-  (record with voice) button. The speaker answers the questions in that section
-  out loud and the AI fills the fields automatically.
-- **Automatic silence detection** — recording stops on its own after 4 seconds
-  of silence (configurable), with a 3-second minimum recording length so short
-  pauses don't cut you off.
-- **Live volume meter** — a real-time RMS-based meter shows input level while
-  recording, turning red when the signal is too quiet and orange/yellow when
-  too loud.
-- **Floating stop button** — a persistent control to end recording from
-  anywhere on the page.
+  button; the AI fills the fields automatically from spoken answers.
+- **Automatic silence detection** — recording stops after ~4 s of silence,
+  with a 3-second minimum length so short pauses don't cut you off.
+- **Live volume meter** — real-time RMS meter, red when too quiet,
+  orange/yellow when too loud.
 - **Manual override** — every field remains editable by hand; editing a field
-  manually clears any AI warning attached to it.
+  clears its AI warning.
+- **Draft submissions** — start a submission, fill sections incrementally,
+  complete it when done (`POST /start-submission`, `/complete-submission`).
+
+### Server-side audio preprocessing
+- ffmpeg pipeline: silence trim → internal-silence collapse → EBU R128 loudness
+  normalization → 16 kHz mono Opus/WebM (smaller uploads, better ASR).
+- Graceful fallback: if ffmpeg is missing or fails, the original recording is
+  used so a field worker never loses a take.
 
 ### AI extraction engine (Google Gemini)
-- **Single-request extraction** — transcript, structured data, confidence
-  scores, and confidence reasons are all returned from one Gemini call per
-  section (using a JSON response schema), instead of multiple round-trips.
-- **Type-aware prompting** — the prompt generator builds field-specific rules
-  per question type:
-  - *Categorical / Dichotomous* — returns the exact integer option code.
-  - *Numeric / Continuous* — extracts the number and converts spoken units
+- **Single-request extraction** — transcript, structured data, per-field
+  confidence scores, and confidence reasons come back from one Gemini call per
+  section, using a JSON response schema.
+- **Type-aware prompting** — rules generated per question type:
+  - *Categorical / Dichotomous* — exact integer option code.
+  - *Numeric / Continuous* — value extraction with unit conversion
     (e.g. متر، میلی‌متر) to the question's expected unit.
-  - *Date* — normalizes to `YYYY-MM-DD` (year-only becomes `YYYY-01-01`).
-  - *Text / MultiSelect* — returns the exact phrase or selected codes.
-  - *Manual prompt override* — any question can carry a custom `manual_prompt`
-    that replaces the generated rule.
-- **Confidence scoring** — every extracted field gets a 0–1 confidence value
-  plus a short human-readable reason explaining why confidence is below 1.
-- **Audio handling** — uploaded audio is saved to `uploads/`, sent to Gemini as
-  inline bytes, and deleted after processing.
+  - *Date* — normalized to `YYYY-MM-DD` (year-only becomes `YYYY-01-01`).
+  - *Text / MultiSelect* — exact phrase or comma-separated codes.
+  - *Grouped questions* — repeated entries indexed as `V_1`, `V_2`, … for
+    multi-item answers (e.g. several medications).
+  - *Manual prompt override* — any question can carry a custom `manual_prompt`.
+- **Resilient API access**:
+  - Round-robin rotation over multiple API keys (`GEMINI_API_KEYS`).
+  - Retry with backoff on quota (429), transient overload (500/503), timeouts,
+    and dropped connections.
+  - **Model failover** — when the primary model reports "high demand", the call
+    moves down a fallback chain (`GEMINI_FALLBACK_MODELS`,
+    default `gemini-2.5-flash,gemini-2.0-flash`).
 
 ### Clinical anomaly detection
-- After a section is filled, answers are sent to a second Gemini "quality
-  control" pass that reviews them for medically impossible values,
+- Per-section quality pass reviews answers for medically impossible values,
   contradictions, and suspicious combinations (e.g. male + pregnancy).
-- Low-confidence fields from the extraction step are passed forward as hints so
-  the anomaly checker pays extra attention to them.
-- Warnings are **non-blocking** and returned as structured items with a
-  `v_code`, a Persian `message`, and a `severity` of `warning` or `critical`.
+- Final cross-section pass at submit time catches contradictions *between*
+  sections (e.g. "never smoked" vs. COPD medication).
+- Low-confidence fields are passed forward as hints so the checker pays extra
+  attention to them.
+- Warnings are non-blocking: `{v_code, message (Persian), severity}` with
+  severity of `warning` or `critical`.
 
 ### Warning UI
-- **Inline field highlighting** — flagged inputs get an orange (warning) or red
-  (critical) border.
-- **Per-section badges** — each section header shows a count of fields with
-  warnings.
-- **Floating warning summary panel** — a collapsible list of every active
-  warning across the form, with its field code and message.
+- Inline orange/red highlighting on flagged inputs, per-section badges, and a
+  floating collapsible summary panel across the whole form.
 
 ### Conditional form logic
-- Sections can declare dependencies (`depends_on_vcode` / `depends_on_value`)
-  so a section only appears when a parent answer matches a given value.
-- Visibility is re-evaluated live as the AI fills fields or the user edits them.
-
-### Admin panel (`/admin`)
-- **Dashboard** — total submissions, completed vs. draft counts, registered
-  users, total AI API calls, average AI confidence, and submissions in the last
-  7 days, with progress-bar breakdowns.
-- **Submissions** — paginated list of all submissions with user, national code,
-  date, status, and response count; a detail modal shows every answer, its
-  transcript, voice/manual source, and AI confidence.
-- **Users** — list users with submission counts, add new users, and delete
-  users.
-- **Questions** — browse all questions grouped by section with their type,
-  unit, and order (inline editing is exposed via the API; the UI edit dialog is
-  marked as upcoming).
-- **AI logs** — view recent API calls with section, model, token usage, and
-  truncated prompt/response previews.
-- **Settings** — adjust recording timing and AI model preferences (stored
-  client-side).
-- **Export** — JSON export of all submissions and their responses (CSV planned).
+- Sections declare dependencies (`depends_on_vcode` / `depends_on_value`) and
+  skip rules (`skip_if_vcode` / `skip_if_value`); visibility is re-evaluated
+  live as fields are filled or edited.
 
 ### Infrastructure
-- **CDN proxy** — Tailwind CSS and the Vazirmatn font are proxied through the
-  server (`/cdn/tailwindcss`, `/cdn/vazirmatn`) and cached in memory, so the
-  app works in restricted-network environments. Fetches honor an outbound proxy
-  and fail gracefully.
-- **Outbound proxy support** — both the Gemini client and the CDN fetcher
-  respect `GENAI_PROXY`, `HTTP_PROXY`, or `HTTPS_PROXY`.
-- **PostgreSQL persistence** via SQLAlchemy ORM with UUID primary keys and JSONB
-  columns.
-
----
+- **CDN proxy** — Tailwind CSS and Vazirmatn font proxied through the server
+  (`/cdn/tailwindcss`, `/cdn/vazirmatn`) and cached in memory, so the app works
+  in restricted-network environments.
+- **Outbound proxy support** — Gemini calls and CDN fetches honor
+  `GENAI_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY`.
+- **Docker packaging** — image includes ffmpeg; suitable for Hugging Face
+  Spaces (see deployment below).
 
 ## Tech stack
 
-| Layer       | Technology                                          |
-|-------------|-----------------------------------------------------|
-| Backend     | FastAPI, Uvicorn                                    |
-| Database    | PostgreSQL, SQLAlchemy ORM                          |
-| AI          | Google Gemini (`google-genai`) — Flash & Flash-Lite |
-| Frontend    | Vanilla JS, Tailwind CSS (proxied), Vazirmatn font  |
-| Audio       | Browser `MediaRecorder` + Web Audio API             |
-| Config      | python-dotenv                                       |
-
----
+| Layer     | Technology                                          |
+|-----------|-----------------------------------------------------|
+| Backend   | FastAPI, Uvicorn                                    |
+| Database  | PostgreSQL, SQLAlchemy ORM                          |
+| AI        | Google Gemini (`google-genai`) with key + model failover |
+| Frontend  | Vanilla JS, Tailwind CSS (proxied), Vazirmatn font  |
+| Audio     | Browser `MediaRecorder` + server-side ffmpeg        |
+| Config    | python-dotenv                                       |
 
 ## Architecture
 
 ```
-Browser (static/index.html + app.js)
+Browser (static/*.html + JS)
+  │  signup / login (national code)
+  ▼
+GET /form ──► GET /get-form-structure ──► sections + questions (DB-driven)
   │  records audio per section
   ▼
-POST /process-voice ──► ai_engine.process_audio() ──► Gemini (flash-lite)
-  │                         returns {transcript, data, confidence, reasons}
+POST /process-voice ──► audio_processor (ffmpeg) ──► ai_engine.process_audio()
+  │                       returns {transcript, data, confidence, reasons}
   │  stores Response rows
   ▼
-POST /check-section-anomalies ──► ai_engine.check_anomalies() ──► Gemini (flash)
-                                    returns [{v_code, message, severity}]
+POST /check-section-anomalies / /check-final-anomalies
+  │     returns [{v_code, message, severity}]
+  ▼
+POST /complete-submission
 
-Admin (static/admin.html + admin.js) ──► /api/admin/* ──► PostgreSQL
+Dashboard (static/dashboard.html) ──► /api/dashboard + /api/admin/* ──► PostgreSQL
 ```
-
----
 
 ## Project structure
 
 ```
 VoiceCohortRecord/
-├── main.py            # FastAPI app: routes for voice, anomalies, admin API, CDN proxy
-├── ai_engine.py       # PromptGenerator: prompt building, Gemini calls, schemas
-├── models.py          # SQLAlchemy models (User, Form, Section, Question, ...)
-├── database.py        # Engine, session, get_db dependency
-├── requirements.txt   # Python dependencies
-├── static/
-│   ├── index.html     # Voice questionnaire UI (RTL, Persian)
-│   ├── app.js         # Recording, AI result application, warning UI
-│   ├── admin.html     # Admin panel shell + sidebar
-│   └── admin.js       # Admin dashboard, submissions, users, questions, logs
-└── uploads/           # Temporary audio files (gitignored, auto-cleaned)
+├── main.py                  # Entrypoint shim (honors $PORT, binds 0.0.0.0)
+├── app/
+│   ├── main.py              # FastAPI app factory, routers, static mount
+│   ├── models.py            # SQLAlchemy models (User, Form, Section, Question, ...)
+│   ├── core/config.py       # Env loading, paths, models, keys, tuning knobs
+│   ├── db/base.py           # Declarative Base
+│   ├── db/session.py        # Engine, SessionLocal, get_db dependency
+│   ├── routers/
+│   │   ├── pages.py         # Page routes (/ , /form, /signup, /login, ...) + CDN proxy
+│   │   ├── auth.py          # /api/signup, /api/login, /api/dashboard
+│   │   ├── questionnaire.py # Form structure, voice processing, anomalies, submissions
+│   │   └── admin.py         # /api/admin/* management API (CRUD, logs, export)
+│   └── services/
+│       ├── ai_engine.py     # Prompts, schemas, Gemini calls, key+model failover
+│       ├── audio_processor.py # ffmpeg silence trim + loudnorm preprocessing
+│       ├── cdn.py           # Cached CDN proxy fetcher
+│       └── responses.py     # Response persistence helpers
+├── static/                  # Vanilla JS frontend (RTL, Persian): signup,
+│                            # login, dashboard, questionnaire (index.html)
+├── tests/                   # pytest suite (audio processor, failover logic)
+├── requirements.txt
+├── Dockerfile               # python:3.10-slim + ffmpeg, uvicorn on $PORT
+└── uploads/                 # Temporary audio files (gitignored, auto-cleaned)
 ```
-
----
 
 ## Data model
 
+All primary keys are auto-increment integers.
+
 | Model        | Purpose                                                                 |
 |--------------|-------------------------------------------------------------------------|
-| `User`       | Respondents/operators — name, national code (unique), phone, role.      |
+| `User`       | Respondents/operators — name, national code (unique), phone, role (1=user, 2=admin). |
 | `Form`       | A questionnaire definition (name, category).                            |
 | `Section`    | A group of questions; supports conditional show/skip rules and ordering.|
-| `Question`   | A single question — `v_code`, type, `coding_options` (JSONB), unit, optional `manual_prompt`. |
+| `Question`   | A single question — `v_code`, type, `coding_options` (JSONB), unit, optional `manual_prompt`, `group_pair`. |
 | `Submission` | One filled questionnaire instance, with `draft`/`completed` status.     |
-| `Response`   | A single answer — extracted value, transcript, voice flag, AI confidence.|
+| `Response`   | A single answer — extracted value (+JSON variant), transcript, voice flag, AI confidence, group index. |
 | `ApiLog`     | Record of each AI request — section, model, prompt, response, tokens.   |
 
 Notable fields:
 - `Question.coding_options` — JSONB map of option code → Persian label.
-- `Section.depends_on_vcode` / `depends_on_value` — conditional visibility.
+- `Section.depends_on_vcode` / `depends_on_value`, `skip_if_vcode` /
+  `skip_if_value` — conditional visibility.
 - `Response.is_voice` — whether the answer came from voice or manual entry.
-
----
+- `Response.group_index` — index of repeated entries within a grouped question.
 
 ## Getting started
 
 ### Prerequisites
 - Python 3.10+
 - PostgreSQL
+- ffmpeg on PATH (optional but recommended — see audio preprocessing)
 - A Google Gemini API key
 
 ### Installation
 
 ```bash
-# clone and enter the project
 git clone <repo-url>
 cd VoiceCohortRecord
 
-# create and activate a virtual environment
 python -m venv venv
 source venv/Scripts/activate    # Windows (bash) — use venv\Scripts\activate on cmd
 
-# install dependencies
 pip install -r requirements.txt
 ```
 
@@ -207,10 +215,15 @@ Create a `.env` file in the project root:
 
 ```env
 DATABASE_URL=postgresql://user:password@localhost:5432/vcr
-GOOGLE_API_KEY=your_gemini_api_key
+GEMINI_API_KEYS=key1,key2          # or GEMINI_API_KEY / GOOGLE_API_KEY
 
-# optional: outbound proxy for Gemini and CDN fetches
-GENAI_PROXY=http://your-proxy:port
+# optional
+GENAI_FALLBACK_MODELS=gemini-2.5-flash,gemini-2.0-flash
+GENAI_TIMEOUT_MS=60000             # outbound HTTP timeout for Gemini calls
+GENAI_RETRY_BACKOFF_SECONDS=1.5    # wait between transient-failure retries
+GENAI_OVERLOAD_RETRIES=1           # extra retries after one pass over all keys
+FFMPEG_PATH=C:\path\to\ffmpeg.exe  # otherwise found on PATH
+GENAI_PROXY=http://your-proxy:port # outbound proxy for Gemini + CDN fetches
 ```
 
 > The `.env` file is gitignored. Never commit API keys or credentials.
@@ -230,59 +243,113 @@ uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 Then open:
-- Questionnaire — http://127.0.0.1:8000/
-- Admin panel — http://127.0.0.1:8000/admin
+- Signup — http://127.0.0.1:8000/signup
+- Login — http://127.0.0.1:8000/login
+- Dashboard — http://127.0.0.1:8000/dashboard
+- Form — http://127.0.0.1:8000/form
+
+> `/` serves the signup page by default.
 
 > Microphone access requires a secure context. `localhost` is treated as
 > secure by browsers; if you serve VCR from another host, use HTTPS or the mic
 > will be blocked.
 
----
+### Tests
+
+```bash
+pytest tests/
+```
+
+## Deployment
+
+### Docker
+
+```bash
+docker build -t vcr .
+docker run -p 8000:8000 --env-file .env vcr
+```
+
+### Hugging Face Spaces
+
+1. Create a Space → SDK: **Docker** → push this repo to it.
+   The frontmatter at the top of this README (`sdk: docker`,
+   `app_port: 7860`) configures the build.
+2. In Space **Settings → Variables and secrets**, set:
+   - `GEMINI_API_KEYS` (secret) — comma-separated Gemini API keys.
+   - `DATABASE_URL` (secret) — external PostgreSQL (HF Spaces has no managed
+     DB; e.g. Neon/Supabase). Append `?sslmode=require` if the host demands TLS.
+3. Tables auto-create on first boot — seed forms/sections/questions afterwards.
 
 ## API reference
 
-### Public / form
-| Method | Path                       | Description                                       |
-|--------|----------------------------|---------------------------------------------------|
-| GET    | `/`                        | Serve the questionnaire UI.                       |
-| GET    | `/get-form-structure`      | Sections + questions, ordered, with dependencies. |
-| POST   | `/process-voice`           | Upload section audio; returns data + confidence.  |
-| POST   | `/check-section-anomalies` | Validate a section's answers; returns warnings.   |
-| GET    | `/cdn/tailwindcss`         | Proxy for Tailwind CSS.                           |
-| GET    | `/cdn/vazirmatn`           | Proxy for the Vazirmatn font CSS.                 |
+### Pages
+| Method | Path                | Description                        |
+|--------|---------------------|------------------------------------|
+| GET    | `/`                 | Landing page.                      |
+| GET    | `/form`             | Questionnaire UI.                  |
+| GET    | `/signup`, `/login` | Auth pages.                        |
+| GET    | `/dashboard`        | Role-based dashboard UI (user or admin). |
+| GET    | `/cdn/tailwindcss`  | Proxied Tailwind CSS.              |
+| GET    | `/cdn/vazirmatn`    | Proxied Vazirmatn font CSS.        |
 
-### Admin
-| Method | Path                                | Description                          |
-|--------|-------------------------------------|--------------------------------------|
-| GET    | `/admin`                            | Serve the admin panel.               |
-| GET    | `/api/admin/stats`                  | Dashboard statistics.                |
-| GET    | `/api/admin/submissions`            | List submissions (`limit`/`offset`/`status`). |
-| GET    | `/api/admin/submission/{id}`        | Full submission detail with answers. |
-| GET    | `/api/admin/users`                  | List users with submission counts.   |
-| POST   | `/api/admin/user`                   | Create a user.                       |
-| DELETE | `/api/admin/user/{id}`              | Delete a user.                       |
-| GET    | `/api/admin/questions`              | Questions grouped by section.        |
-| PUT    | `/api/admin/question/{id}`          | Update a question.                   |
-| GET    | `/api/admin/api-logs`               | Recent AI request logs.              |
-| GET    | `/api/admin/export/submissions`     | Export submissions (`format=json`).  |
+### Public / form (`questionnaire.py`)
+| Method | Path                       | Description                                        |
+|--------|----------------------------|----------------------------------------------------|
+| GET    | `/get-form-structure`      | Sections + questions, ordered, with dependencies.  |
+| POST   | `/process-voice`           | Upload section audio; returns transcript + data + confidence. |
+| POST   | `/check-section-anomalies` | Validate one section's answers; returns warnings.  |
+| POST   | `/check-final-anomalies`   | Cross-section validation over ALL answers.         |
+| POST   | `/start-submission`        | Create a draft submission.                         |
+| POST   | `/complete-submission`     | Mark a submission completed.                       |
 
----
+### Auth (`auth.py`)
+| Method | Path              | Description                                   |
+|--------|-------------------|-----------------------------------------------|
+| POST   | `/api/signup`     | Create user (national_code + phone validated).|
+| POST   | `/api/login`      | Log in by national_code; returns user + role. |
+| GET    | `/api/dashboard`  | Role-specific dashboard data (`?user_id=`).   |
+
+### Admin (`admin.py`, prefix `/api/admin`)
+| Method | Path                              | Description                              |
+|--------|-----------------------------------|------------------------------------------|
+| GET    | `/stats`                          | Dashboard statistics.                    |
+| GET    | `/submissions`                    | List submissions (`limit`/`offset`/`status`). |
+| GET    | `/submission/{id}`                | Full submission detail with answers.     |
+| DELETE | `/submissions/{id}`               | Delete a submission.                     |
+| DELETE | `/responses/{id}`                 | Delete a single response.                |
+| GET    | `/users`                          | List users with submission counts.       |
+| POST   | `/user`                           | Create a user.                           |
+| PUT    | `/users/{id}`                     | Update a user.                           |
+| DELETE | `/user/{id}`                      | Delete a user.                           |
+| GET    | `/forms`                          | List forms.                              |
+| POST   | `/forms`                          | Create a form.                           |
+| PUT    | `/forms/{id}`                     | Update a form.                           |
+| DELETE | `/forms/{id}`                     | Delete a form.                           |
+| GET    | `/forms/{id}/sections`            | Sections of a form.                      |
+| POST   | `/sections`                       | Create a section.                        |
+| PUT    | `/sections/{id}`                  | Update a section.                        |
+| DELETE | `/sections/{id}`                  | Delete a section.                        |
+| GET    | `/sections/{id}/questions`        | Questions of a section.                  |
+| POST   | `/questions`                      | Create a question.                       |
+| PUT    | `/questions/{id}`                 | Update a question.                       |
+| DELETE | `/questions/{id}`                 | Delete a question.                       |
+| GET    | `/api-logs`                       | Recent AI request logs.                  |
+| GET    | `/export/submissions`             | Export submissions (`format=json`).      |
 
 ## Security notes
 
-- The admin endpoints under `/api/admin/*` and the `/admin` page currently have
-  **no authentication or authorization**. Do not expose this service publicly
-  without adding access control (e.g. an auth layer / reverse proxy), since it
-  exposes patient data, allows user deletion, and reveals AI prompt logs.
+- Login is national-code-only (no passwords) — treat this as identification,
+  not authentication.
+- The management endpoints under `/api/admin/*` have **no authorization
+  check**. Do not expose this service publicly without adding access control,
+  since it exposes patient data, allows user deletion, and reveals AI prompt
+  logs. The dashboard only *hides* admin features client-side by role.
 - Audio uploads are written to `uploads/` and removed after processing.
 - Treat the database as containing PII (national codes, phone numbers) and
   protect it accordingly.
 
----
-
 ## Roadmap
 
 - CSV export for submissions (JSON export is implemented).
-- In-panel question editing UI (the update API already exists).
-- Configurable AI model selection wired to the backend.
-- Authentication and role-based access for the admin panel.
+- Passwords / proper sessions for login.
+- Authorization checks for admin endpoints.

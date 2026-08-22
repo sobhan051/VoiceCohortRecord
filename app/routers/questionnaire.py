@@ -497,6 +497,13 @@ async def process_voice(
 
         db.commit()
 
+        # Extraction succeeded: clean up the original + processed clips.
+        for p in {file_path, processed_path}:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
         return {
             "data": extracted_data,
             "confidence": result.get("confidence", {}),
@@ -506,6 +513,3 @@ async def process_voice(
     except Exception as e:
         print(f"CRITICAL ERROR: {str(e)}")
         return {"error": str(e)}
-
-    # Archive for testing: original + processed clips are kept in UPLOAD_DIR.
-    # Re-enable cleanup here once testing is complete.
