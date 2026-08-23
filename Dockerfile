@@ -18,4 +18,4 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=7860
 
 # Shell form so $PORT (set by the platform) is expanded at runtime.
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860}

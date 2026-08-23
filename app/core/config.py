@@ -21,14 +21,14 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Default Gemini models per call type.
-AUDIO_MODEL = "gemini-2.5-flash"
-ANOMALY_MODEL = "gemini-2.5-flash"
+AUDIO_MODEL = "gemini-3-flash-preview"
+ANOMALY_MODEL = "gemini-3-flash-preview"
 
 # Models tried (in order) when the primary model returns transient overload
 # ("high demand", 503/500). Full chain per call: [primary] + FALLBACK_MODELS.
 FALLBACK_MODELS = [
     m.strip()
-    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash,gemini-2.0-flash").split(",")
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.1-flash-lite,gemini-3.5-flash").split(",")
     if m.strip()
 ]
 

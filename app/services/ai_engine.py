@@ -11,6 +11,7 @@ from google.genai.types import (
     HttpOptions,
     HttpRetryOptions,
     GenerateContentConfig,
+    ThinkingConfig,
 )
 
 from app.core import config
@@ -284,7 +285,9 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=PromptGenerator._format_warning_schema(),
-                    temperature=0.0,
+                    thinking_config=ThinkingConfig(
+                        thinking_level="minimal"
+                    ),
                 ),
             )
 
@@ -367,7 +370,9 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=PromptGenerator._format_warning_schema(),
-                    temperature=0.0,
+                    thinking_config=ThinkingConfig(
+                        thinking_level="minimal"
+                    ),
                 ),
             )
 
@@ -629,7 +634,9 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=schema,
-                    temperature=0.0,
+                    thinking_config=ThinkingConfig(
+                        thinking_level="minimal"
+                    ),
                 ),
             )
 
