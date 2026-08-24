@@ -49,14 +49,22 @@ dashboards, submission browsing, user management, and AI request logs.
   - *Categorical / Dichotomous* — returns the exact integer option code.
   - *Numeric / Continuous* — extracts the number and converts spoken units
     (e.g. متر، میلی‌متر) to the question's expected unit.
-  - *Date* — normalizes to `YYYY-MM-DD` (year-only becomes `YYYY-01-01`).
-  - *Text / MultiSelect* — returns the exact phrase or selected codes.
-  - *Manual prompt override* — any question can carry a custom `manual_prompt`
-    that replaces the generated rule.
-- **Confidence scoring** — every extracted field gets a 0–1 confidence value
-  plus a short human-readable reason explaining why confidence is below 1.
-- **Audio handling** — uploaded audio is saved to `uploads/`, sent to Gemini as
-  inline bytes, and deleted after processing.
+  - *Date* — normalized to `YYYY-MM-DD` (year-only becomes `YYYY-01-01`).
+  - *Text / MultiSelect* — exact phrase or comma-separated codes.
+  - *Grouped questions* — repeated entries indexed as `V_1`, `V_2`, … for
+    multi-item answers (e.g. several medications).
+  - *Manual prompt override* — any question can carry a custom `manual_prompt`.
+- **Conditional questions** — when the spoken answers make a question logically
+  inapplicable (e.g. never smoked → quit age), the model returns `N/A` with
+  confidence 1; the UI marks the field «غیرمرتبط» and counts it as resolved in
+  the progress bar, and the anomaly checker never flags it.
+- **Resilient API access**:
+  - Round-robin rotation over multiple API keys (`GEMINI_API_KEYS`).
+  - Retry with backoff on quota (429), transient overload (500/503), timeouts,
+    and dropped connections.
+  - **Model failover** — when the primary model reports "high demand", the call
+    moves down a fallback chain (`GEMINI_FALLBACK_MODELS`,
+    default `gemini-3.1-flash-lite,gemini-3.5-flash`).
 
 ### Clinical anomaly detection
 - After a section is filled, answers are sent to a second Gemini "quality
