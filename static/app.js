@@ -567,17 +567,18 @@ function updateProgressPanel() {
             // Skip indexed/grouped vcodes (e.g. D1__1, D1__2) — handled separately below
             if (/_\d+$/.test(vcode)) return;
             countedVcodes.add(vcode);
+            const isNa = input.dataset.na === '1';
             if (input.type === 'checkbox') {
                 const checked = sectionEl.querySelectorAll(
                     `input[type="checkbox"][data-vcode="${vcode}"]:checked`
                 );
-                if (checked.length > 0) answered++;
+                if (isNa || checked.length > 0) answered++;
             } else if (input.type === 'radio') {
                 const checked = sectionEl.querySelector(
                     `input[type="radio"][data-vcode="${vcode}"]:checked`
                 );
-                if (checked) answered++;
-            } else if (input.value && input.value.trim() !== '') {
+                if (isNa || checked) answered++;
+            } else if (isNa || (input.value && input.value.trim() !== '')) {
                 answered++;
             }
         });
@@ -1166,6 +1167,20 @@ function applyAiResults(data) {
         const val = data[vCode];
         if (val === null || val === undefined) return;
 
+        // "N/A" = the AI judged this question not applicable (e.g. never
+        // smoked → quit age). Tag the inputs instead of filling a value.
+        if (val === 'N/A') {
+            document.querySelectorAll(`[data-vcode="${vCode}"]`).forEach(input => {
+                input.dataset.na = '1';
+                if (input.type !== 'radio' && input.type !== 'checkbox') {
+                    input.value = '';
+                    input.placeholder = 'غیرمرتبط';
+                }
+                input.classList.add('ai-updated');
+            });
+            return;
+        }
+
         if (typeof val === 'string' && val.includes(',')) {
             const codes = val.split(',').map(c => c.trim());
             codes.forEach(code => {
@@ -1235,6 +1250,8 @@ document.addEventListener('change', function(event) {
     }
 
     sessionContext[vcode] = value;
+    // A manual answer overrides any AI "not applicable" marking.
+    delete input.dataset.na;
     // Remove warnings for this field when user manually edits
     delete fieldWarnings[vcode];
     applyFieldWarnings();

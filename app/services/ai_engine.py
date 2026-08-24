@@ -231,7 +231,9 @@ class PromptGenerator:
             "medically suspicious values, contradictions, or suspicious combinations. "
             "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that are "
             "clearly medically significant or potentially unsafe. "
-            "Do not nitpick minor or harmless details.\n\n"
+            "Do not nitpick minor or harmless details. "
+            "A value of \"N/A\" means the question was not applicable (its precondition "
+            "was not met); never flag it as missing, contradictory, or suspicious.\n\n"
         )
 
         # Append field descriptions (options decoded so the model reasons about
@@ -315,7 +317,9 @@ class PromptGenerator:
             "different sections of the questionnaire. "
             "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that "
             "are clearly medically significant or potentially unsafe. "
-            "Do not nitpick minor wording or harmless details.\n\n"
+            "Do not nitpick minor wording or harmless details. "
+            "A value of \"N/A\" means the question was not applicable (its precondition "
+            "was not met); never flag it as missing, contradictory, or suspicious.\n\n"
         )
 
         # All answered fields with section context.
@@ -587,6 +591,13 @@ class PromptGenerator:
             "and will be used to recover any field that could not be extracted. "
             "If a field is unclear, still extract every other field and leave only the "
             "unclear fields as null.\n\n"
+            "CONDITIONAL QUESTIONS: Some questions only apply when another answer "
+            "qualifies (for example, 'at what age did you quit smoking?' only applies "
+            "if the patient smoked and later stopped). If what was said makes a "
+            "question clearly NOT APPLICABLE, set its value to exactly \"N/A\" with "
+            "confidence 1 and reason \"غیرمرتبط\". Only do this when another stated "
+            "answer rules the question out — never merely because the value was not "
+            "mentioned.\n\n"
             "For every field also provide a confidence score between 0 and 1 "
             "(0 = completely guessing, 1 = absolutely certain). "
             "The confidence must be below 1 whenever the value was hard to hear, "
