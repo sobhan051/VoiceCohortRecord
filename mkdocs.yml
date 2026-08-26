@@ -1,0 +1,129 @@
+site_name: Voice Cohort Record — VCR
+site_description: Voice-driven data collection platform for medical cohort studies — Persian, Gemini-powered, DB-driven forms.
+site_author: VCR Team
+site_url: https://example.com/vcr
+repo_url: https://github.com/your-org/VoiceCohortRecord
+repo_name: VoiceCohortRecord
+copyright: Copyright &copy; 2026 VCR
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  language: en
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+  font:
+    text: Vazirmatn
+    code: JetBrains Mono
+  icon:
+    logo: logo
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - navigation.path
+    - navigation.indexes
+    - toc.follow
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.action.view
+    - content.tabs.link
+
+markdown_extensions:
+  - admonition
+  - abbr
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.details
+  - pymdownx.snippets
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.caret
+  - pymdownx.mark
+  - pymdownx.tilde
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Configuration: getting-started/configuration.md
+      - Quick Start: getting-started/quickstart.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Data Model: architecture/data-model.md
+      - Form Engine: architecture/form-engine.md
+  - Guides:
+      - Questionnaire Flow: guides/questionnaire-flow.md
+      - Voice & Audio Pipeline: guides/audio-pipeline.md
+      - AI Extraction Engine: guides/ai-engine.md
+      - Anomaly Detection: guides/anomaly-detection.md
+      - Frontend: guides/frontend.md
+  - API Reference:
+      - Overview: api/overview.md
+      - Pages & CDN: api/pages.md
+      - Auth & Dashboard: api/auth.md
+      - Questionnaire: api/questionnaire.md
+      - Admin: api/admin.md
+  - Operations:
+      - Deployment: operations/deployment.md
+      - Security: operations/security.md
+      - Troubleshooting: operations/troubleshooting.md
+  - Development:
+      - Project Structure: development/structure.md
+      - Testing: development/testing.md
+      - Contributing: development/contributing.md
+
+plugins:
+  - search:
+      lang: en
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/your-org/VoiceCohortRecord
+  generator: false
+
+extra_css:
+  - stylesheets/extra.css
