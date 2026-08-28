@@ -403,7 +403,7 @@ async def process_voice(
     db: Session = Depends(get_db)
 ):
     # Log the incoming format for debugging
-    print(f"📥 Received audio: {audio.filename}")
+    print(f"Received audio: {audio.filename}")
     print(f"   Content-Type: {audio.content_type}")
     print(f"   Format: {audio_format}")
     print(f"   Bitrate: {bitrate}")

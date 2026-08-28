@@ -76,7 +76,7 @@ function getBestAudioMimeType() {
     
     for (const mt of mimeTypes) {
         if (MediaRecorder.isTypeSupported(mt.mime)) {
-            console.log(`✅ Using format: ${mt.mime} (${mt.codec} @ ${mt.bitrate ? mt.bitrate/1000 + 'kbps' : 'uncompressed'})`);
+            console.log(`Using format: ${mt.mime} (${mt.codec} @ ${mt.bitrate ? mt.bitrate/1000 + 'kbps' : 'uncompressed'})`);
             return mt;
         }
     }
@@ -198,7 +198,7 @@ function markSectionAnswered(sectionKey) {
 
     const badge = document.getElementById(`badge-${sectionKey}`);
     if (badge && !badge.classList.contains('active')) {
-        badge.textContent = '✓ تکمیل شد';
+        badge.innerHTML = '<span class="inline-flex items-center gap-1"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg> تکمیل شد</span>';
         badge.classList.add('section-done-badge');
     }
 }
@@ -682,11 +682,11 @@ function updateProgressPanel() {
     const badgeEl = document.getElementById('status-badge');
     if (badgeEl && totalQuestions > 0) {
         if (overallPct === 100) {
-            badgeEl.textContent = '✅ همه بخش‌ها تکمیل شد';
-            badgeEl.className = 'bg-green-50 text-green-600 px-4 py-2 rounded-full text-sm font-medium';
+            badgeEl.innerHTML = '<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> همه بخش‌ها تکمیل شد</span>';
+            badgeEl.className = 'bg-green-50 text-green-600 px-3 sm:px-4 py-2 rounded-full text-xs sm:text-sm font-medium whitespace-nowrap';
         } else {
-            badgeEl.textContent = `📊 ${totalAnswered} از ${totalQuestions}`;
-            badgeEl.className = 'bg-blue-50 text-blue-600 px-4 py-2 rounded-full text-sm font-medium';
+            badgeEl.textContent = `${totalAnswered} از ${totalQuestions}`;
+            badgeEl.className = 'bg-blue-50 text-blue-600 px-3 sm:px-4 py-2 rounded-full text-xs sm:text-sm font-medium whitespace-nowrap';
         }
     }
 }
@@ -782,7 +782,7 @@ async function toggleRecording(sectionKey) {
             // Add bitrate for formats that support it
             if (audioFormat.bitrate) {
                 options.audioBitsPerSecond = audioFormat.bitrate;
-                console.log(`🎚️ Setting bitrate: ${audioFormat.bitrate/1000}kbps`);
+                console.log(`Setting bitrate: ${audioFormat.bitrate/1000}kbps`);
             }
             
             mediaRecorder = new MediaRecorder(stream, options);
@@ -907,7 +907,7 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
     if (currentSubmissionId) formData.append("submission_id", currentSubmissionId);
 
     // Log the actual file size for debugging
-    console.log(`📤 Uploading ${savedFormat.label} (${savedFormat.bitrate ? savedFormat.bitrate/1000 + 'kbps' : 'uncompressed'}): ${(audioBlob.size/1024).toFixed(2)} KB`);
+    console.log(`Uploading ${savedFormat.label} (${savedFormat.bitrate ? savedFormat.bitrate/1000 + 'kbps' : 'uncompressed'}): ${(audioBlob.size/1024).toFixed(2)} KB`);
 
     try {
         const response = await fetch("/process-voice", { method: "POST", body: formData });

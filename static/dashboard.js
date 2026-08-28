@@ -91,19 +91,19 @@ async function loadUserDashboard() {
                 <div class="stat-card bg-white rounded-2xl p-6 shadow-sm">
                     <div class="flex items-center justify-between">
                         <div><p class="text-gray-500 text-sm">کل پرسشنامه‌ها</p><p class="text-3xl font-bold text-gray-800 mt-2">${stats.total_submissions}</p></div>
-                        <div class="bg-blue-100 p-3 rounded-full"><span class="text-2xl">📋</span></div>
+                        <div class="bg-blue-100 p-3 rounded-full text-blue-600"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg></div>
                     </div>
                 </div>
                 <div class="stat-card bg-white rounded-2xl p-6 shadow-sm">
                     <div class="flex items-center justify-between">
                         <div><p class="text-gray-500 text-sm">تکمیل شده</p><p class="text-3xl font-bold text-green-600 mt-2">${stats.completed_submissions}</p></div>
-                        <div class="bg-green-100 p-3 rounded-full"><span class="text-2xl">✅</span></div>
+                        <div class="bg-green-100 p-3 rounded-full text-green-600"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
                     </div>
                 </div>
                 <div class="stat-card bg-white rounded-2xl p-6 shadow-sm">
                     <div class="flex items-center justify-between">
                         <div><p class="text-gray-500 text-sm">پیش‌نویس</p><p class="text-3xl font-bold text-yellow-600 mt-2">${stats.draft_submissions}</p></div>
-                        <div class="bg-yellow-100 p-3 rounded-full"><span class="text-2xl">✏️</span></div>
+                        <div class="bg-yellow-100 p-3 rounded-full text-yellow-600"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></div>
                     </div>
                 </div>
             </div>`;
@@ -151,7 +151,7 @@ async function loadUserDashboard() {
                                             <td class="p-4 text-sm">${sub.updated_at ? new Date(sub.updated_at).toLocaleDateString('fa-IR') : '-'}</td>
                                             <td class="p-4 text-sm">${sub.response_count} از ${sub.total_questions || '?'}</td>
                                             <td class="p-4">
-                                                ${sub.status === 'draft' ? `<a href="/form?form_id=${sub.form_id}" class="text-blue-600 hover:text-blue-800 text-sm">ادامه</a>` : `<span class="text-gray-400 text-sm">✅ تکمیل شده</span>`}
+                                                ${sub.status === 'draft' ? `<a href="/form?form_id=${sub.form_id}" class="text-blue-600 hover:text-blue-800 text-sm">ادامه</a>` : `<span class="inline-flex items-center gap-1 text-gray-400 text-sm"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> تکمیل شده</span>`}
                                             </td>
                                         </tr>`).join('')}
                                 </tbody>
@@ -179,6 +179,31 @@ async function loadUserDashboard() {
     }
 }
 
+function toggleAdminSidebar() {
+    const sb = document.getElementById('admin-sidebar');
+    const ov = document.getElementById('admin-sidebar-overlay');
+    if (!sb) return;
+    const isOpen = sb.classList.contains('open');
+    if (isOpen) {
+        sb.classList.remove('open');
+        if (ov) ov.classList.add('hidden');
+        document.body.style.overflow = '';
+    } else {
+        sb.classList.add('open');
+        if (ov) ov.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+    }
+}
+function closeAdminSidebar() {
+    const sb = document.getElementById('admin-sidebar');
+    const ov = document.getElementById('admin-sidebar-overlay');
+    if (sb && sb.classList.contains('open')) {
+        sb.classList.remove('open');
+        if (ov) ov.classList.add('hidden');
+        document.body.style.overflow = '';
+    }
+}
+
 // ---------- Admin Dashboard ----------
 function showAdminSection(section) {
     adminSection = section;
@@ -194,6 +219,7 @@ function showAdminSection(section) {
         case 'forms': loadAdminForms(container); break;
         case 'settings': loadAdminSettings(container); break;
     }
+    if (window.innerWidth < 1024) closeAdminSidebar();
 }
 
 async function loadAdminDashboard(container) {
@@ -211,8 +237,8 @@ async function loadAdminDashboard(container) {
                 ${forms.map(f => `
                     <a href="/form?form_id=${f.form_id}" class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 hover:border-blue-200 hover:shadow-md transition block">
                         <div class="flex items-center gap-3 mb-3">
-                            <div class="bg-blue-100 p-3 rounded-xl">
-                                <span class="text-2xl">📝</span>
+                            <div class="bg-blue-100 p-3 rounded-xl text-blue-600">
+                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
                             </div>
                             <div class="flex-1 min-w-0">
                                 <p class="font-bold text-gray-800">${f.form_name}</p>
@@ -314,7 +340,7 @@ async function viewAdminSubmission(submissionId) {
                         <p class="text-gray-600"><strong>پاسخ:</strong> <span id="resp-val-${resp.response_id}">${resp.extracted_value || '-'}</span></p>
                         ${resp.transcript ? `<p class="text-gray-500 text-sm mt-2"><strong>متن ضبط شده:</strong> ${resp.transcript}</p>` : ''}
                         <div class="flex items-center gap-4 mt-2 text-xs text-gray-400">
-                            <span>${resp.is_voice ? '🎤 ضبط صدا' : '✏️ دستی'}</span>
+                            <span class="inline-flex items-center gap-1">${resp.is_voice ? '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg> ضبط صدا' : '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg> دستی'}</span>
                             ${resp.ai_confidence ? `<span>دقت AI: ${resp.ai_confidence}%</span>` : ''}
                             <button onclick="deleteAdminResponse('${resp.response_id}')" class="text-red-500 hover:text-red-700 mr-auto">حذف پاسخ</button>
                         </div>
@@ -491,9 +517,9 @@ function renderFormsView(container, forms) {
                                 <p class="font-bold text-gray-800 text-sm">${f.form_name}</p>
                                 ${f.category ? `<p class="text-xs text-gray-500">${f.category}</p>` : ''}
                             </div>
-                            <div class="flex gap-1">
-                                <button onclick="event.stopPropagation(); editForm('${f.form_id}')" class="text-xs text-blue-600 hover:text-blue-800 p-1">✏️</button>
-                                <button onclick="event.stopPropagation(); deleteForm('${f.form_id}')" class="text-xs text-red-600 hover:text-red-800 p-1">🗑️</button>
+                            <div class="flex gap-1 shrink-0">
+                                <button onclick="event.stopPropagation(); editForm('${f.form_id}')" class="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600" aria-label="ویرایش"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>
+                                <button onclick="event.stopPropagation(); deleteForm('${f.form_id}')" class="p-1.5 rounded-lg hover:bg-red-50 text-red-600" aria-label="حذف"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
                             </div>
                         </div>`).join('')}
                 </div>
@@ -552,9 +578,9 @@ async function loadFormSections() {
                         <p class="font-bold text-gray-800 text-sm">${s.name_fa}</p>
                         <p class="text-xs text-gray-500">${s.section_key} — ترتیب ${s.sort_order}</p>
                     </div>
-                    <div class="flex gap-1">
-                        <button onclick="event.stopPropagation(); editSection('${s.section_id}')" class="text-xs text-blue-600 hover:text-blue-800 p-1">✏️</button>
-                        <button onclick="event.stopPropagation(); deleteSection('${s.section_id}')" class="text-xs text-red-600 hover:text-red-800 p-1">🗑️</button>
+                    <div class="flex gap-1 shrink-0">
+                        <button onclick="event.stopPropagation(); editSection('${s.section_id}')" class="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600" aria-label="ویرایش"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>
+                        <button onclick="event.stopPropagation(); deleteSection('${s.section_id}')" class="p-1.5 rounded-lg hover:bg-red-50 text-red-600" aria-label="حذف"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
                     </div>
                 </div>`).join('');
         document.getElementById('add-section-btn').classList.remove('opacity-50', 'pointer-events-none');
@@ -588,11 +614,11 @@ async function loadSectionQuestions() {
                                 ${q.unit ? `<span class="mx-1">•</span> واحد: ${q.unit}` : ''}
                                 ${q.variable_name ? `<span class="mx-1">•</span> ${q.variable_name}` : ''}
                             </p>
-                            ${q.manual_prompt ? `<p class="text-xs text-orange-500 mt-1 truncate">📝 ${q.manual_prompt}</p>` : ''}
+                            ${q.manual_prompt ? `<p class="text-xs text-orange-500 mt-1 truncate inline-flex items-center gap-1"><svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg> ${q.manual_prompt}</p>` : ''}
                         </div>
                         <div class="flex gap-1 mr-2 shrink-0">
-                            <button onclick="editQuestion('${q.question_id}')" class="text-xs text-blue-600 hover:text-blue-800 p-1">✏️</button>
-                            <button onclick="deleteQuestion('${q.question_id}')" class="text-xs text-red-600 hover:text-red-800 p-1">🗑️</button>
+                            <button onclick="editQuestion('${q.question_id}')" class="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600" aria-label="ویرایش"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>
+                            <button onclick="deleteQuestion('${q.question_id}')" class="p-1.5 rounded-lg hover:bg-red-50 text-red-600" aria-label="حذف"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
                         </div>
                     </div>
                 </div>`).join('');
@@ -875,6 +901,8 @@ function saveAdminSettings() {
 // ---------- Expose to global scope ----------
 window.handleLogout = handleLogout;
 window.showAdminSection = showAdminSection;
+window.toggleAdminSidebar = toggleAdminSidebar;
+window.closeAdminSidebar = closeAdminSidebar;
 window.viewAdminSubmission = viewAdminSubmission;
 window.closeSubmissionModal = closeSubmissionModal;
 window.deleteAdminSubmission = deleteAdminSubmission;

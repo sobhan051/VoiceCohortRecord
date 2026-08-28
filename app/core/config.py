@@ -21,21 +21,21 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Default Gemini models per call type.
-AUDIO_MODEL = "gemini-3.5-flash"
-ANOMALY_MODEL = "gemini-3.5-flash"
+AUDIO_MODEL = "gemini-3-flash-preview"
+ANOMALY_MODEL = "gemini-3-flash-preview"
 
 # Models tried (in order) when the primary model returns transient overload
 # ("high demand", 503/500). Full chain per call: [primary] + FALLBACK_MODELS.
 FALLBACK_MODELS = [
     m.strip()
-    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash,gemini-2.0-flash").split(",")
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",")
     if m.strip()
 ]
 
 # Outbound HTTP timeout for Gemini calls (milliseconds). Audio extraction over a
 # proxy can take a while; too low a value times out a healthy request and forces
 # the field worker to re-record. Tunable via env.
-GENAI_TIMEOUT_MS = int(os.getenv("GENAI_TIMEOUT_MS", "60000"))
+GENAI_TIMEOUT_MS = int(os.getenv("GENAI_TIMEOUT_MS", "90000"))
 
 # Failover/retry tuning for quota ("RESOURCE_EXHAUSTED", 429) and transient
 # overload ("UNAVAILABLE", 503 / "INTERNAL", 500) errors.
