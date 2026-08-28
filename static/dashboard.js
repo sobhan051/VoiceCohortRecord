@@ -110,14 +110,14 @@ async function loadUserDashboard() {
 
         if (openForms.length > 0) {
             html += `
-                <div class="mb-8">
+                <div class="mb-8" id="open-forms-block">
                     <h3 class="text-xl font-bold text-gray-800 mb-4">فرم‌های قابل تکمیل</h3>
                     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         ${openForms.map(f => `
                             <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 hover:shadow-md transition">
                                 <h4 class="font-bold text-gray-800 mb-2">${f.form_name}</h4>
                                 ${f.category ? `<p class="text-sm text-gray-500 mb-4">دسته: ${f.category}</p>` : ''}
-                                <a href="/form" onclick="localStorage.setItem('selected_form_id', '${f.form_id}')" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm transition">شروع پرسشنامه</a>
+                                <a href="/form?form_id=${f.form_id}" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm transition">شروع پرسشنامه</a>
                             </div>`).join('')}
                     </div>
                 </div>`;
@@ -151,7 +151,7 @@ async function loadUserDashboard() {
                                             <td class="p-4 text-sm">${sub.updated_at ? new Date(sub.updated_at).toLocaleDateString('fa-IR') : '-'}</td>
                                             <td class="p-4 text-sm">${sub.response_count} از ${sub.total_questions || '?'}</td>
                                             <td class="p-4">
-                                                ${sub.status === 'draft' ? `<a href="/form" class="text-blue-600 hover:text-blue-800 text-sm">ادامه</a>` : `<span class="text-gray-400 text-sm">✅ تکمیل شده</span>`}
+                                                ${sub.status === 'draft' ? `<a href="/form?form_id=${sub.form_id}" class="text-blue-600 hover:text-blue-800 text-sm">ادامه</a>` : `<span class="text-gray-400 text-sm">✅ تکمیل شده</span>`}
                                             </td>
                                         </tr>`).join('')}
                                 </tbody>
@@ -160,10 +160,17 @@ async function loadUserDashboard() {
                     </div>
                 </div>`;
         } else {
+            // Same behavior as admin panel: navigate with ?form_id= whenever possible,
+            // never send the user to a form-less URL when a concrete form exists.
+            const startFormLink = openForms.length === 1
+                ? `<a href="/form?form_id=${openForms[0].form_id}" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl transition">شروع پرسشنامه جدید</a>`
+                : openForms.length > 0
+                    ? `<a href="#open-forms-block" onclick="event.preventDefault(); document.getElementById('open-forms-block').scrollIntoView({behavior:'smooth'})" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl transition">انتخاب فرم</a>`
+                    : `<a href="/form" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl transition">شروع پرسشنامه جدید</a>`;
             html += `
                 <div class="bg-white rounded-2xl p-8 shadow-sm text-center">
                     <p class="text-gray-500 mb-4">هنوز هیچ پرسشنامه‌ای ثبت نکرده‌اید</p>
-                    <a href="/form" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl transition">شروع پرسشنامه جدید</a>
+                    ${startFormLink}
                 </div>`;
         }
         container.innerHTML = html;

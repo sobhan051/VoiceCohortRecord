@@ -174,6 +174,7 @@ async def dashboard(user_id: str, db: Session = Depends(get_db)):
 
             submissions_list.append({
                 "submission_id": str(sub.submission_id),
+                "form_id": str(sub.form_id),
                 "form_name": form.form_name if form else "نامشخص",
                 "status": sub.status,
                 "created_at": sub.created_at.isoformat() if sub.created_at else None,
