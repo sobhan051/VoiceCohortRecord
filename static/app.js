@@ -4,15 +4,14 @@ let mediaRecorder;
 let audioChunks = [];
 let recordingStates = {};
 let activeRecordingSection = null;
-let audioContext = null;
-let analyserNode = null;
-let silenceDetectionActive = false;
-
-const SILENCE_THRESHOLD = 0.01;
-const SILENCE_DURATION_MS = 3500;
-const MIN_RECORDING_MS = 3000;
-let silenceStartTime = null;
+// let audioContext = null;
+// let analyserNode = null;
+// let silenceDetectionActive = false;
+// const SILENCE_THRESHOLD = 0.01;
+// const SILENCE_DURATION_MS = 3500;
+// let silenceStartTime = null;
 let recordingStartTime = null;
+const MIN_RECORDING_MS = 3000;
 
 let sessionContext = {};           // { v_code: value }
 let sessionConfidence = {};        // { v_code: 0..1 } – AI confidence per field
@@ -77,7 +76,7 @@ function getBestAudioMimeType() {
     
     for (const mt of mimeTypes) {
         if (MediaRecorder.isTypeSupported(mt.mime)) {
-            console.log(`✅ Using format: ${mt.mime} (${mt.codec} @ ${mt.bitrate ? mt.bitrate/1000 + 'kbps' : 'uncompressed'})`);
+            console.log(`Using format: ${mt.mime} (${mt.codec} @ ${mt.bitrate ? mt.bitrate/1000 + 'kbps' : 'uncompressed'})`);
             return mt;
         }
     }
@@ -199,7 +198,7 @@ function markSectionAnswered(sectionKey) {
 
     const badge = document.getElementById(`badge-${sectionKey}`);
     if (badge && !badge.classList.contains('active')) {
-        badge.textContent = '✓ تکمیل شد';
+        badge.innerHTML = '<span class="inline-flex items-center gap-1"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg> تکمیل شد</span>';
         badge.classList.add('section-done-badge');
     }
 }
@@ -817,11 +816,11 @@ function updateProgressPanel() {
     const badgeEl = document.getElementById('status-badge');
     if (badgeEl && totalQuestions > 0) {
         if (overallPct === 100) {
-            badgeEl.textContent = '✅ همه بخش‌ها تکمیل شد';
-            badgeEl.className = 'bg-green-50 text-green-600 px-4 py-2 rounded-full text-sm font-medium';
+            badgeEl.innerHTML = '<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> همه بخش‌ها تکمیل شد</span>';
+            badgeEl.className = 'bg-green-50 text-green-600 px-3 sm:px-4 py-2 rounded-full text-xs sm:text-sm font-medium whitespace-nowrap';
         } else {
-            badgeEl.textContent = `📊 ${totalAnswered} از ${totalQuestions}`;
-            badgeEl.className = 'bg-blue-50 text-blue-600 px-4 py-2 rounded-full text-sm font-medium';
+            badgeEl.textContent = `${totalAnswered} از ${totalQuestions}`;
+            badgeEl.className = 'bg-blue-50 text-blue-600 px-3 sm:px-4 py-2 rounded-full text-xs sm:text-sm font-medium whitespace-nowrap';
         }
     }
 }
@@ -926,7 +925,7 @@ async function toggleRecording(sectionKey) {
             // Add bitrate for formats that support it
             if (audioFormat.bitrate) {
                 options.audioBitsPerSecond = audioFormat.bitrate;
-                console.log(`🎚️ Setting bitrate: ${audioFormat.bitrate/1000}kbps`);
+                console.log(`Setting bitrate: ${audioFormat.bitrate/1000}kbps`);
             }
             
             mediaRecorder = new MediaRecorder(stream, options);
@@ -1051,7 +1050,7 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
     if (currentSubmissionId) formData.append("submission_id", currentSubmissionId);
 
     // Log the actual file size for debugging
-    console.log(`📤 Uploading ${savedFormat.label} (${savedFormat.bitrate ? savedFormat.bitrate/1000 + 'kbps' : 'uncompressed'}): ${(audioBlob.size/1024).toFixed(2)} KB`);
+    console.log(`Uploading ${savedFormat.label} (${savedFormat.bitrate ? savedFormat.bitrate/1000 + 'kbps' : 'uncompressed'}): ${(audioBlob.size/1024).toFixed(2)} KB`);
 
     try {
         const response = await fetch("/process-voice", { method: "POST", body: formData });
@@ -1481,7 +1480,15 @@ async function submitFinalForm() {
             alert(`خطا در ثبت نهایی: ${data.error}`);
             return;
         }
-        alert(`اطلاعات با موفقیت ثبت شد. (${data.saved} پاسخ ذخیره شد)`);
+        let msg = `اطلاعات با موفقیت ثبت شد. (${data.saved} پاسخ ذخیره شد)`;
+        if (data.health_check && data.health_check.check_id) {
+            msg += data.health_check.existing ? "\nچکاپ شما قبلاً ایجاد شده است." : "\n✓ چکاپ سلامت شما ایجاد شد — در داشبورد قابل مشاهده است.";
+        }
+        alert(msg);
+        if (data.health_check && data.health_check.check_id && !data.health_check.existing) {
+            window.location.href = `/health-check/${data.health_check.check_id}`;
+            return;
+        }
         // Lock further edits for this patient; require an explicit new start
         currentSubmissionId = null;
         document.getElementById('status-badge').textContent = 'ثبت شد';

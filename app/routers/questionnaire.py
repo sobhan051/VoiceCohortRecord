@@ -1,5 +1,6 @@
 """Questionnaire flow: form structure, voice processing, anomaly checks,
 and submission lifecycle."""
+import json
 import os
 import re
 import shutil
@@ -7,7 +8,7 @@ import uuid
 from datetime import datetime
 
 from app.services.audio_processor import process_audio_file
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile, BackgroundTasks
 from sqlalchemy import and_, desc
 from sqlalchemy.orm import Session
 
@@ -16,7 +17,12 @@ from app.core.config import UPLOAD_DIR
 from app.db.session import get_db
 from app.services.ai_engine import PromptGenerator
 from app.services.visibility import normalize_answers
-from app.services.responses import upsert_response
+from app.services.responses import upsert_response, delete_section_responses
+
+from app.services.health_check import (
+    queue_user_health_check,
+    is_health_check_eligible,
+)
 
 router = APIRouter()
 
@@ -98,9 +104,6 @@ async def check_section_anomalies(
 
     filtered_answers = {v: normalized_answers[v] for v in relevant_vcodes if v in normalized_answers}
 
-    # Pull the verbatim transcript of this section's recording from the stored
-    # responses so the checker can confirm suspicious readings and catch
-    # values that were spoken but not extracted.
     transcript = None
     if submission_id:
         try:
@@ -108,8 +111,13 @@ async def check_section_anomalies(
                 and_(
                     models.Response.submission_id == int(submission_id),
                     models.Response.transcript.isnot(None),
+                    models.Response.v_code.in_(list(relevant_vcodes)),
                 )
+            ).order_by(
+                desc(models.Response.processed_at),
+                desc(models.Response.response_id),
             ).limit(1).first()
+
             if saved and saved.transcript:
                 transcript = saved.transcript
         except (ValueError, AttributeError):
@@ -194,13 +202,17 @@ async def check_final_anomalies(
     transcripts = {}
     saved = db.query(models.Response).filter(
         models.Response.submission_id == sub_id
+    ).order_by(
+        models.Response.processed_at.asc(),
+        models.Response.response_id.asc(),
     ).all()
+
     for r in saved:
         if not r.transcript:
             continue
         sk = vcode_to_section.get(r.v_code)
         if sk:
-            transcripts.setdefault(sk, r.transcript)
+            transcripts[sk] = r.transcript
 
     try:
         warnings = PromptGenerator.check_final_anomalies(
@@ -298,6 +310,9 @@ async def start_submission(
     # its section_key (via the question) for section-level progress.
     saved_responses = db.query(models.Response).filter(
         models.Response.submission_id == submission.submission_id
+    ).order_by(
+        models.Response.processed_at.asc(),
+        models.Response.response_id.asc(),
     ).all()
 
     section_key_by_qid = {}
@@ -335,7 +350,8 @@ async def start_submission(
 
 @router.post("/complete-submission")
 async def complete_submission(
-    payload: dict,   # { "submission_id": "...", "answers": {v_code: value}, "confidence": {v_code: 0..1} }
+    payload: dict,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     """Persist the final answer set (including manually typed fields) and mark
@@ -411,7 +427,31 @@ async def complete_submission(
     submission.updated_at = datetime.now()
     db.commit()
 
-    return {"success": True, "submission_id": str(sub_id), "saved": saved}
+    # --- Health check trigger: queued, non-blocking ---
+    health_info = None
+    try:
+        existing = (
+            db.query(models.HealthCheck)
+            .filter(models.HealthCheck.user_id == submission.user_id)
+            .first()
+        )
+
+        if existing:
+            health_info = {
+                "check_id": str(existing.check_id),
+                "existing": True,
+            }
+        elif is_health_check_eligible(db, submission.user_id):
+            queued = queue_user_health_check(background_tasks, submission.user_id)
+            if queued:
+                health_info = {"status": "queued"}
+    except Exception as e:
+        print(f"[health trigger] failed: {e}")
+
+    out = {"success": True, "submission_id": str(sub_id), "saved": saved}
+    if health_info:
+        out["health_check"] = health_info
+    return out
 
 
 @router.post("/process-voice")
@@ -424,7 +464,7 @@ async def process_voice(
     db: Session = Depends(get_db)
 ):
     # Log the incoming format for debugging
-    print(f"📥 Received audio: {audio.filename}")
+    print(f"Received audio: {audio.filename}")
     print(f"   Content-Type: {audio.content_type}")
     print(f"   Format: {audio_format}")
     print(f"   Bitrate: {bitrate}")
@@ -473,14 +513,8 @@ async def process_voice(
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(audio.file, buffer)
 
-    # Server-side: trim silence + normalize loudness via ffmpeg, then archive
-    # both the original and processed clips for testing. (Cleanup + opus->wav
-    # switch can be added once testing is done.)
-    processed_path = process_audio_file(file_path)
-
     try:
-        result = PromptGenerator.process_audio(processed_path, questions)
-
+        result = PromptGenerator.process_audio(file_path, questions)
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')
         confidence_map = result.get('confidence', {}) or {}
@@ -506,18 +540,26 @@ async def process_voice(
             if (m.group(1) if m else k) in section_vcodes:
                 filtered_data[k] = v
         extracted_data = filtered_data
+        
+        # A new voice recording for this section replaces the previous state of this section.
+        if sub_id:
+            delete_section_responses(db, sub_id, questions)
 
         # Save responses
         for v_code, val in extracted_data.items():
             if val is None:
                 continue
 
-            # Handle indexed v_codes (e.g. "D1_0")
             group_idx = None
+            storage_vcode = v_code
+
+            # Handle indexed v_codes like "D1_1"
             match = re.match(r'^(.+?)_(\d+)$', v_code)
             if match:
                 base_vcode = match.group(1)
                 group_idx = int(match.group(2))
+                storage_vcode = base_vcode
+
                 q = db.query(models.Question).filter(
                     models.Question.v_code == base_vcode
                 ).first()
@@ -525,13 +567,18 @@ async def process_voice(
                 q = db.query(models.Question).filter(
                     models.Question.v_code == v_code
                 ).first()
+
                 # If this is a grouped question, default to group_index=0
                 if q and q.group_pair:
                     group_idx = 0
 
             if q:
                 upsert_response(
-                    db, sub_id, q, v_code, val,
+                    db,
+                    sub_id,
+                    q,
+                    storage_vcode,
+                    val,
                     transcript=transcript_text,
                     is_voice=True,
                     confidence=confidence_map.get(v_code),

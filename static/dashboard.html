@@ -10,21 +10,49 @@
         body { font-family: 'Vazirmatn', sans-serif; }
         .sidebar-item {
             transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
         .sidebar-item:hover {
             background-color: #f3f4f6;
-            transform: translateX(-5px);
+            transform: translateX(-3px);
         }
         .sidebar-item.active {
             background-color: #3b82f6;
             color: white;
         }
+        .sidebar-item.active svg { color: white; }
         .stat-card {
             transition: transform 0.2s ease, box-shadow 0.2s ease;
         }
         .stat-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.02);
+            transform: translateY(-3px);
+            box-shadow: 0 12px 20px -5px rgba(0, 0, 0, 0.08);
+        }
+        #admin-sidebar {
+            transition: transform 0.3s ease;
+        }
+        @media (max-width: 1024px) {
+            #admin-sidebar {
+                position: fixed;
+                inset: 0 0 0 auto;
+                width: min(300px, 85vw);
+                max-width: 85vw;
+                z-index: 40;
+                transform: translateX(100%);
+                box-shadow: -8px 0 24px rgba(0,0,0,0.12);
+            }
+            #admin-sidebar.open {
+                transform: translateX(0);
+            }
+            #admin-content {
+                padding: 16px !important;
+            }
+        }
+        @media (max-width: 640px) {
+            #admin-content { padding: 12px !important; }
+            .stat-card { padding: 16px !important; }
         }
     </style>
 </head>
@@ -42,14 +70,14 @@
         <!-- User Dashboard -->
         <div id="user-dashboard" class="hidden">
             <header class="bg-white shadow-sm border-b border-gray-100">
-                <div class="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
-                    <div>
-                        <h1 class="text-2xl font-bold text-blue-600">پروژه VCR</h1>
-                        <p class="text-xs text-gray-400">داشبورد کاربری</p>
+                <div class="max-w-5xl mx-auto px-4 py-3 sm:py-4 flex items-center justify-between gap-2 flex-wrap">
+                    <div class="min-w-0">
+                        <h1 class="text-xl sm:text-2xl font-bold text-blue-600">پروژه VCR</h1>
+                        <p class="text-xs text-gray-400 hidden sm:block">داشبورد کاربری</p>
                     </div>
-                    <div class="flex items-center gap-4">
-                        <span id="user-info" class="text-sm text-gray-600 font-medium"></span>
-                        <button onclick="handleLogout()" class="text-sm text-red-500 hover:text-red-600 font-medium">خروج</button>
+                    <div class="flex items-center gap-2 sm:gap-4 shrink-0">
+                        <span id="user-info" class="text-sm text-gray-600 font-medium truncate max-w-[140px] sm:max-w-none"></span>
+                        <button onclick="handleLogout()" class="text-sm text-red-500 hover:text-red-600 font-medium whitespace-nowrap">خروج</button>
                     </div>
                 </div>
             </header>
@@ -61,44 +89,61 @@
         <!-- Admin Dashboard -->
         <div id="admin-dashboard" class="hidden flex h-screen">
             <!-- Sidebar (first child = right side in RTL) -->
-            <aside class="w-80 bg-white shadow-lg flex flex-col">
-                <div class="p-6 border-b">
-                    <h1 class="text-2xl font-bold text-blue-600">پنل مدیریت</h1>
-                    <p class="text-xs text-gray-400 mt-1">سیستم کوهرت VCR</p>
+            <aside id="admin-sidebar" class="w-80 bg-white shadow-lg flex flex-col shrink-0">
+                <div class="p-6 border-b flex items-center justify-between">
+                    <div>
+                        <h1 class="text-2xl font-bold text-blue-600">پنل مدیریت</h1>
+                        <p class="text-xs text-gray-400 mt-1">سیستم کوهرت VCR</p>
+                    </div>
+                    <button onclick="toggleAdminSidebar()" class="lg:hidden p-2 rounded-xl hover:bg-gray-100 text-gray-500" aria-label="بستن منو">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
                 </div>
-                <nav class="flex-1 p-4 space-y-2">
-                    <a href="#" onclick="showAdminSection('dashboard'); return false;" class="sidebar-item active block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="dashboard">
-                        <span class="ml-3">📊</span> داشبورد
+                <nav class="flex-1 p-4 space-y-2 overflow-y-auto">
+                    <a href="#" onclick="showAdminSection('dashboard'); return false;" class="sidebar-item active px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="dashboard">
+                        <svg class="w-5 h-5 shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
+                        داشبورد
                     </a>
-                    <a href="#" onclick="showAdminSection('forms'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="forms">
-                        <span class="ml-3">📋</span> مدیریت فرم‌ها
+                    <a href="#" onclick="showAdminSection('forms'); return false;" class="sidebar-item px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="forms">
+                        <svg class="w-5 h-5 shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+                        مدیریت فرم‌ها
                     </a>
-                    <a href="#" onclick="showAdminSection('submissions'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="submissions">
-                        <span class="ml-3">📋</span> پرسشنامه‌ها
+                    <a href="#" onclick="showAdminSection('submissions'); return false;" class="sidebar-item px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="submissions">
+                        <svg class="w-5 h-5 shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                        پرسشنامه‌ها
                     </a>
-                    <a href="#" onclick="showAdminSection('users'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="users">
-                        <span class="ml-3">👥</span> کاربران
+                    <a href="#" onclick="showAdminSection('users'); return false;" class="sidebar-item px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="users">
+                        <svg class="w-5 h-5 shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                        کاربران
                     </a>
-<a href="#" onclick="showAdminSection('settings'); return false;" class="sidebar-item block px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="settings">
-                        <span class="ml-3">⚙️</span> تنظیمات
+                    <a href="#" onclick="showAdminSection('settings'); return false;" class="sidebar-item px-4 py-3 rounded-xl text-gray-700 font-medium" data-section="settings">
+                        <svg class="w-5 h-5 shrink-0 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                        تنظیمات
                     </a>
                 </nav>
             </aside>
+            <!-- Mobile overlay -->
+            <div id="admin-sidebar-overlay" class="hidden fixed inset-0 bg-black/30 backdrop-blur-sm z-30 lg:hidden" onclick="toggleAdminSidebar()"></div>
 
             <!-- Main Content Area -->
-            <main class="flex-1 overflow-y-auto">
+            <main class="flex-1 overflow-y-auto min-w-0">
                 <!-- Header -->
-                <header class="bg-white shadow-sm border-b border-gray-100 px-6 py-4 flex items-center justify-between">
-                    <div>
-                        <h1 class="text-2xl font-bold text-blue-600">پنل مدیریت</h1>
-                        <p class="text-xs text-gray-400">سیستم کوهرت VCR</p>
+                <header class="bg-white shadow-sm border-b border-gray-100 px-4 sm:px-6 py-4 flex items-center justify-between gap-2">
+                    <div class="flex items-center gap-3 min-w-0">
+                        <button onclick="toggleAdminSidebar()" class="lg:hidden p-2 -mr-1 rounded-xl hover:bg-gray-100 text-gray-600 shrink-0" aria-label="منو">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                        </button>
+                        <div class="min-w-0">
+                            <h1 class="text-xl sm:text-2xl font-bold text-blue-600">پنل مدیریت</h1>
+                            <p class="text-xs text-gray-400 hidden sm:block">سیستم کوهرت VCR</p>
+                        </div>
                     </div>
-                    <div class="flex items-center gap-4">
-                        <span id="admin-user-info" class="text-sm text-gray-600 font-medium"></span>
-                        <button onclick="handleLogout()" class="text-sm text-red-500 hover:text-red-600 font-medium">خروج</button>
+                    <div class="flex items-center gap-2 sm:gap-4 shrink-0">
+                        <span id="admin-user-info" class="text-sm text-gray-600 font-medium truncate max-w-[120px] sm:max-w-none"></span>
+                        <button onclick="handleLogout()" class="text-sm text-red-500 hover:text-red-600 font-medium whitespace-nowrap">خروج</button>
                     </div>
                 </header>
-                <div id="admin-content" class="p-8"></div>
+                <div id="admin-content" class="p-4 sm:p-8"></div>
             </main>
         </div>
     </div>
@@ -108,7 +153,7 @@
         <div class="bg-white rounded-2xl max-w-4xl w-full max-h-[80vh] overflow-y-auto m-4" onclick="event.stopPropagation()">
             <div class="sticky top-0 bg-white border-b p-4 flex justify-between items-center">
                 <h3 class="text-xl font-bold">جزئیات پرسشنامه</h3>
-                <button onclick="closeSubmissionModal()" class="text-gray-500 hover:text-gray-700">✕</button>
+                <button onclick="closeSubmissionModal()" class="p-2 rounded-xl hover:bg-gray-100 text-gray-500 hover:text-gray-700" aria-label="بستن"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg></button>
             </div>
             <div id="submission-detail" class="p-6"></div>
         </div>

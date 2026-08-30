@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>گزارش چکاپ سلامت — VCR</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <link href="https://cdn.jsdelivr.net/npm/@fontsource/vazirmatn@5.2.8/400.min.css" rel="stylesheet">
+    <style>
+        body { font-family: 'Vazirmatn', sans-serif; }
+        .fade-up { opacity: 0; transform: translateY(18px); animation: fadeUp .6s ease forwards; }
+        @keyframes fadeUp { to { opacity: 1; transform: translateY(0); } }
+        .stagger > * { opacity: 0; animation: fadeUp .55s ease forwards; }
+        .stagger > *:nth-child(1) { animation-delay: .05s } .stagger > *:nth-child(2) { animation-delay: .12s }
+        .stagger > *:nth-child(3) { animation-delay: .19s } .stagger > *:nth-child(4) { animation-delay: .26s }
+        .stagger > *:nth-child(5) { animation-delay: .33s } .stagger > *:nth-child(6) { animation-delay: .40s }
+        .stagger > *:nth-child(7) { animation-delay: .47s } .stagger > *:nth-child(8) { animation-delay: .54s }
+        .stagger > *:nth-child(9) { animation-delay: .61s } .stagger > *:nth-child(10) { animation-delay: .68s }
+        .stagger > *:nth-child(11) { animation-delay: .75s } .stagger > *:nth-child(12) { animation-delay: .82s }
+        .stagger > *:nth-child(n+13) { animation-delay: .9s }
+
+        /* score ring */
+        .ring { transform: rotate(-90deg); }
+        .ring circle { transition: stroke-dashoffset 1.4s cubic-bezier(.4,0,.2,1); }
+        .ring-num { transition: opacity .3s; }
+
+        .card-hover { transition: transform .25s ease, box-shadow .25s ease; }
+        .card-hover:hover { transform: translateY(-3px); box-shadow: 0 14px 30px -10px rgba(0,0,0,.12); }
+
+        .point-line { border-right: 3px solid #e5e7eb; padding-right: .9rem; transition: border-color .3s; }
+        .point-line:hover { border-color: #3b82f6; }
+        .action-line { border-right: 3px solid #10b981; }
+        .action-line.warn { border-color: #f59e0b; }
+        .action-line.stop { border-color: #ef4444; }
+
+        .sec-dot-good { background:#10b981 } .sec-dot-watch { background:#f59e0b } .sec-dot-attention { background:#ef4444 }
+        .sec-border-good { border-color:#a7f3d0 } .sec-border-watch { border-color:#fde68a } .sec-border-attention { border-color:#fecaca }
+        .sec-bg-good { background:#f0fdf4 } .sec-bg-watch { background:#fffbeb } .sec-bg-attention { background:#fef2f2 }
+        .sec-text-good { color:#047857 } .sec-text-watch { color:#b45309 } .sec-text-attention { color:#b91c1c }
+
+        @media print {
+            .no-print { display: none !important; }
+            .fade-up, .stagger > * { animation: none !important; opacity: 1 !important; transform: none !important; }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 antialiased min-h-screen">
+
+    <header class="bg-white/90 backdrop-blur shadow-sm border-b border-gray-100 sticky top-0 z-20">
+        <div class="max-w-3xl mx-auto px-4 py-3 flex justify-between items-center">
+            <a href="/dashboard" class="text-blue-600 font-bold hover:text-blue-700 transition">→ بازگشت به داشبورد</a>
+            <button onclick="window.print()" class="no-print text-sm bg-gray-900 text-white px-4 py-2 rounded-xl hover:bg-gray-700 transition">چاپ / PDF</button>
+        </div>
+    </header>
+
+    <main id="content" class="max-w-3xl mx-auto px-4 py-8">
+        <div class="text-center py-24">
+            <div class="animate-spin h-10 w-10 mx-auto mb-4 border-4 border-blue-500 border-t-transparent rounded-full"></div>
+            <p class="text-gray-500">در حال بارگذاری گزارش...</p>
+        </div>
+    </main>
+
+<script>
+const STATUS = {
+    good:      { label: 'وضعیت خوب',    dot: 'sec-dot-good',      border: 'sec-border-good',      bg: 'sec-bg-good',      text: 'sec-text-good',      color: '#10b981' },
+    watch:     { label: 'قابل پیگیری',   dot: 'sec-dot-watch',     border: 'sec-border-watch',     bg: 'sec-bg-watch',     text: 'sec-text-watch',     color: '#f59e0b' },
+    attention: { label: 'نیاز به توجه',  dot: 'sec-dot-attention', border: 'sec-border-attention', bg: 'sec-bg-attention', text: 'sec-text-attention', color: '#ef4444' },
+};
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function load() {
+    const checkId = location.pathname.split('/').pop();
+    let data;
+    try {
+        const res = await fetch(`/api/health-check/${checkId}`);
+        data = await res.json();
+    } catch { return fail('ارتباط با سرور با مشکل مواجه شد'); }
+    if (data.error) return fail(data.error);
+    render(data);
+}
+
+function fail(msg) {
+    document.getElementById('content').innerHTML =
+        `<div class="bg-red-50 text-red-600 p-6 rounded-2xl text-center">${esc(msg)}</div>`;
+}
+
+function render(data) {
+    const r = data.report;
+    const u = data.user || {};
+    const sexFa = { male: 'مرد', female: 'زن' }[u.sex] || u.sex || '—';
+    const dateFa = data.created_at ? new Date(data.created_at).toLocaleDateString('fa-IR') : '';
+    const name = `${u.first_name || ''} ${u.last_name || ''}`.trim() || 'بیمار';
+
+    // ---- legacy markdown fallback ----
+    if (!r) {
+        const md = (data.full_report || '').split('\n').map(l => {
+            const s = l.trim();
+            if (s.startsWith('### ')) return `<h3 class="font-bold mt-4">${esc(s.slice(4))}</h3>`;
+            if (s.startsWith('## ')) return `<h2 class="text-lg font-extrabold mt-6 text-blue-800">${esc(s.slice(3))}</h2>`;
+            if (s.startsWith('# ')) return `<h1 class="text-xl font-extrabold text-blue-900">${esc(s.slice(2))}</h1>`;
+            if (s.startsWith('- ')) return `<li class="point-line my-1.5 text-sm leading-7">${esc(s.slice(2))}</li>`;
+            if (!s) return '<div class="h-2"></div>';
+            return `<p class="leading-8 my-1">${esc(s)}</p>`;
+        }).join('');
+        document.getElementById('content').innerHTML = `
+            <div class="bg-white rounded-3xl shadow-sm border border-gray-100 p-6 md:p-8 fade-up">
+                <div class="bg-blue-50 border border-blue-100 rounded-2xl p-4 mb-6"><p class="font-bold text-blue-900 mb-1">خلاصه</p><p class="leading-8">${esc(data.summary)}</p></div>
+                <article>${md}</article>
+                ${disclaimer()}
+            </div>`;
+        return;
+    }
+
+    // ---- structured report ----
+    const score = r.health_score;
+    const st = STATUS[r.overall_status] || STATUS.watch;
+
+    const ring = score != null ? `
+        <div class="relative w-36 h-36 mx-auto shrink-0">
+            <svg class="ring w-36 h-36" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="52" fill="none" stroke="#e5e7eb" stroke-width="10"/>
+                <circle id="ring-fill" cx="60" cy="60" r="52" fill="none" stroke="${st.color}" stroke-width="10"
+                        stroke-linecap="round" stroke-dasharray="${2 * Math.PI * 52}" stroke-dashoffset="${2 * Math.PI * 52}"/>
+            </svg>
+            <div class="absolute inset-0 flex flex-col items-center justify-center">
+                <span id="ring-num" class="text-4xl font-extrabold" style="color:${st.color}">۰</span>
+                <span class="text-xs text-gray-400 mt-1">از ۱۰۰</span>
+            </div>
+        </div>` : '';
+
+    const sections = (r.sections || []).map((s, i) => {
+        const S = STATUS[s.status] || STATUS.watch;
+        return `
+        <div class="card-hover rounded-2xl border ${S.border} ${S.bg} p-5 fade-up" style="animation-delay:${.15 + i * .07}s">
+            <div class="flex items-center gap-2.5 mb-3">
+                <span class="w-2.5 h-2.5 rounded-full ${S.dot}"></span>
+                <h3 class="font-extrabold ${S.text}">${esc(s.title)}</h3>
+                <span class="text-xs ${S.text} opacity-70 mr-auto">${S.label}</span>
+            </div>
+            <div class="space-y-2">
+                ${(s.points || []).map(p => `<p class="point-line text-sm leading-7 text-gray-700">${esc(p)}</p>`).join('')}
+            </div>
+        </div>`;
+    }).join('');
+
+    const docActions = [
+        r.start_doing?.length ? { t: 'شروع کنید', c: 'start', items: r.start_doing, color: 'text-emerald-700' } : null,
+        r.stop_doing?.length ? { t: 'قطع یا کاهش دهید', c: 'stop', items: r.stop_doing, color: 'text-red-700' } : null,
+        r.keep_doing?.length ? { t: 'ادامه دهید', c: 'keep', items: r.keep_doing, color: 'text-emerald-700' } : null,
+    ].filter(Boolean);
+
+    document.getElementById('content').innerHTML = `
+        <!-- Hero -->
+        <div class="bg-gradient-to-l from-blue-600 via-blue-600 to-indigo-600 rounded-3xl shadow-lg p-6 md:p-8 text-white mb-6 fade-up">
+            <div class="flex flex-col md:flex-row items-center gap-6">
+                ${ring}
+                <div class="flex-1 text-center md:text-right">
+                    <p class="text-blue-100 text-sm">گزارش بررسی سلامت</p>
+                    <h1 class="text-2xl md:text-3xl font-extrabold mt-1">${esc(name)}</h1>
+                    <div class="flex flex-wrap gap-2 mt-3 justify-center md:justify-start text-xs">
+                        <span class="bg-white/15 px-3 py-1 rounded-full">${sexFa}</span>
+                        ${u.age ? `<span class="bg-white/15 px-3 py-1 rounded-full">${esc(u.age)} سال</span>` : ''}
+                        ${u.birth_date ? `<span class="bg-white/15 px-3 py-1 rounded-full">متولد ${esc(u.birth_date)}</span>` : ''}
+                        <span class="bg-white/15 px-3 py-1 rounded-full">${dateFa}</span>
+                    </div>
+                </div>
+            </div>
+            ${score != null ? `<div class="mt-4 flex flex-wrap items-center gap-3 justify-center md:justify-start">
+                <span class="text-sm text-blue-100">ارزیابی کلی:</span>
+                <span class="text-sm font-bold bg-white/15 px-3 py-1 rounded-full">${st.label}</span>
+            </div>` : ''}
+        </div>
+
+        <!-- Summary -->
+        <div class="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 mb-6 fade-up" style="animation-delay:.1s">
+            <h2 class="font-extrabold text-gray-800 mb-2 flex items-center gap-2">
+                <svg class="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                جمع‌بندی پزشک
+            </h2>
+            <p class="leading-8 text-gray-700">${esc(r.summary)}</p>
+        </div>
+
+        <!-- Clinical sections -->
+        ${sections ? `<h2 class="text-lg font-extrabold text-gray-800 mb-3 fade-up">بررسی محورهای بالینی</h2><div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">${sections}</div>` : ''}
+
+        <!-- Actions -->
+        <h2 class="text-lg font-extrabold text-gray-800 mb-3 fade-up">توصیه‌های عملی</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6 stagger">
+            ${docActions.map(a => `
+            <div class="card-hover bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                <h3 class="font-extrabold mb-3 ${a.color}">${a.t}</h3>
+                <div class="space-y-2">
+                    ${a.items.map(x => `<p class="${a.c === 'stop' ? 'action-line stop' : a.c === 'start' ? 'action-line' : 'action-line'} text-sm leading-7 text-gray-700">${esc(x)}</p>`).join('')}
+                </div>
+            </div>`).join('')}
+        </div>
+
+        <!-- When to see doctor -->
+        ${r.when_to_see_doctor?.length ? `
+        <div class="rounded-2xl border border-red-100 bg-red-50 p-5 mb-6 fade-up">
+            <h3 class="font-extrabold text-red-800 mb-3 flex items-center gap-2">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>
+                چه زمانی به پزشک مراجعه کنید
+            </h3>
+            <div class="space-y-2">
+                ${r.when_to_see_doctor.map(x => `<p class="action-line stop text-sm leading-7 text-red-900">${esc(x)}</p>`).join('')}
+            </div>
+        </div>` : ''}
+
+        ${disclaimer()}
+    `;
+
+    animateRing(score, st.color);
+}
+
+function disclaimer() {
+    return `<div class="mt-8 p-4 bg-gray-100 border border-gray-200 rounded-2xl text-xs text-gray-500 leading-6">
+        این گزارش یک بررسی عمومی بر اساس پاسخ‌های ثبت‌شده در پرسشنامه است و جایگزین معاینه، آزمایش و نظر پزشک نیست.
+    </div>`;
+}
+
+function animateRing(score, color) {
+    if (score == null) return;
+    const fill = document.getElementById('ring-fill');
+    const num = document.getElementById('ring-num');
+    if (!fill || !num) return;
+    const C = 2 * Math.PI * 52;
+    requestAnimationFrame(() => { fill.style.strokeDashoffset = C * (1 - Math.min(score, 100) / 100); });
+    // fa digits count-up
+    const fa = '۰۱۲۳۴۵۶۷۸۹';
+    const toFa = n => String(n).split('').map(d => fa[+d] ?? d).join('');
+    const t0 = performance.now(), dur = 1400;
+    (function step(t) {
+        const p = Math.min((t - t0) / dur, 1);
+        num.textContent = toFa(Math.round(score * (1 - Math.pow(1 - p, 3))));
+        if (p < 1) requestAnimationFrame(step);
+    })(t0);
+}
+
+load();
+</script>
+</body>
+</html>
