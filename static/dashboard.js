@@ -748,7 +748,6 @@ async function showQuestionModal(questionData) {
     document.getElementById('q-order').value = questionData?.sort_order ?? 0;
     document.getElementById('q-group-pair').value = questionData?.group_pair || '';
     document.getElementById('q-visibility-rules').value = questionData?.visibility_rules ? JSON.stringify(questionData.visibility_rules, null, 2) : '';
-    document.getElementById('q-table-group').value = questionData?.table_group || '';
 
     // Populate section dropdown — only sections belonging to the selected form
     const sectionSelect = document.getElementById('question-section-id');
@@ -821,7 +820,6 @@ document.getElementById('question-form').addEventListener('submit', async (e) =>
         sort_order: parseInt(document.getElementById('q-order').value) || 0,
         group_pair: document.getElementById('q-group-pair').value || null,
         visibility_rules: visibilityRules,
-        table_group: document.getElementById('q-table-group').value || null,
     };
     try {
         let res;

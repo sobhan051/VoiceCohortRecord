@@ -655,31 +655,7 @@ function renderForm(sections) {
         });
 
         // Now remove grouped questions from rendering (already counted above)
-        const originalQuestions = section.questions || [];
-
-        // Questions sharing table_group (within this section) render as one table
-        const sectionTableGroups = {};
-        originalQuestions.forEach(q => {
-            if (q.table_group) {
-                if (!sectionTableGroups[q.table_group]) sectionTableGroups[q.table_group] = [];
-                sectionTableGroups[q.table_group].push(q);
-            }
-        });
-
-        section.questions = originalQuestions.filter(q => !q.group_pair && !q.table_group);
-
-        // Render table blocks at the position of their first question,
-        // keeping everything else in sort order.
-        const renderedTableGroups = new Set();
-        const questionsHtml = originalQuestions.map(q => {
-            if (q.group_pair) return ''; // grouped questions render in their container above
-            if (q.table_group) {
-                if (renderedTableGroups.has(q.table_group)) return '';
-                renderedTableGroups.add(q.table_group);
-                return renderTableGroup(q.table_group, sectionTableGroups[q.table_group]);
-            }
-            return renderQuestion(q);
-        }).join('');
+        section.questions = (section.questions || []).filter(q => !q.group_pair);
 
         const sectHtml = `
             <section class="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-gray-100"
@@ -702,7 +678,7 @@ function renderForm(sections) {
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
                     ${Object.keys(groupedQuestionsMap).filter(gp => groupedQuestionsSections[gp] === section.section_key).map(gp => renderGroupContainer(gp)).join('')}
-                    ${questionsHtml}
+                    ${section.questions.map(q => renderQuestion(q)).join('')}
                 </div>
             </section>
         `;
@@ -917,69 +893,6 @@ function renderQuestion(q) {
                 <input type="text" data-vcode="${q.v_code}"
                        class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner"
                        placeholder="${q.unit ? 'واحد: ' + q.unit : '---'}">
-            </div>
-        </div>
-    `;
-}
-
-// ---------- Table-grouped Questions (e.g. yes/no/IDK grids) ----------
-// Questions in the same section sharing table_group render as one table:
-// one row per question, one column per shared answer option.
-function getTableGroupColumns(questions) {
-    const columns = [];
-    const seen = new Set();
-    questions.forEach(q => {
-        let options = q.coding_options;
-        if (typeof options === 'string') {
-            try { options = JSON.parse(options); } catch (e) { options = {}; }
-        }
-        Object.entries(options || {}).forEach(([key, val]) => {
-            const k = String(key);
-            if (!seen.has(k)) {
-                seen.add(k);
-                columns.push([k, val]);
-            }
-        });
-    });
-    return columns;
-}
-
-function renderTableGroup(tableGroup, questions) {
-    const columns = getTableGroupColumns(questions);
-    return `
-        <div class="md:col-span-2" id="table-group-${tableGroup}" data-table-group="${tableGroup}">
-            <div class="bg-blue-50/60 border-2 border-blue-100 rounded-2xl p-4">
-                <div class="overflow-x-auto">
-                    <table class="w-full text-sm">
-                        <thead>
-                            <tr>
-                                <th class="p-3 text-right font-bold text-blue-800">سوال</th>
-                                ${columns.map(([key, val]) => `<th class="p-3 text-center font-bold text-blue-800">${val}</th>`).join('')}
-                            </tr>
-                        </thead>
-                        <tbody>
-                            ${questions.map(q => {
-                                // Only render radios for options THIS question actually has
-                                let qOptions = q.coding_options;
-                                if (typeof qOptions === 'string') {
-                                    try { qOptions = JSON.parse(qOptions); } catch (e) { qOptions = {}; }
-                                }
-                                const qOptionKeys = new Set(Object.keys(qOptions || {}).map(String));
-                                return `
-                                <tr class="bg-white border-t border-blue-100 hover:bg-blue-50/40 transition">
-                                    <td class="p-3 text-right text-gray-700 font-medium">${q.question_text_fa}</td>
-                                    ${columns.map(([key]) => qOptionKeys.has(key) ? `
-                                        <td class="p-3 text-center">
-                                            <label class="inline-flex items-center justify-center cursor-pointer">
-                                                <input type="radio" name="${q.v_code}" value="${key}" data-vcode="${q.v_code}" class="w-5 h-5 cursor-pointer">
-                                            </label>
-                                        </td>` : `
-                                        <td class="p-3 text-center text-gray-300">—</td>`).join('')}
-                                </tr>`;
-                            }).join('')}
-                        </tbody>
-                    </table>
-                </div>
             </div>
         </div>
     `;
@@ -1432,8 +1345,7 @@ function applyAiResults(data) {
                 if (input.type === 'radio') {
                     if (input.value == val) {
                         input.checked = true;
-                        const lbl = input.closest('label');
-                        if (lbl) lbl.classList.add('ai-updated');
+                        input.closest('label').classList.add('ai-updated');
                     }
                 } else {
                     input.value = val;

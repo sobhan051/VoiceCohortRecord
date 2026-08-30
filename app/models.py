@@ -50,7 +50,6 @@ class Question(Base):
     sort_order = Column(Integer, default=0)
     group_pair = Column(String(100), nullable=True)
     visibility_rules = Column(JSONB, nullable=True)
-    table_group = Column(String(100), nullable=True)
 
 
 class Submission(Base):
