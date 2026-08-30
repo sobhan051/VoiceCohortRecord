@@ -49,6 +49,8 @@ class Question(Base):
     manual_prompt = Column(Text)
     sort_order = Column(Integer, default=0)
     group_pair = Column(String(100), nullable=True)
+    # Questions in the same section sharing a table_group render as one table
+    table_group = Column(String(100), nullable=True)
 
 
 class Submission(Base):
