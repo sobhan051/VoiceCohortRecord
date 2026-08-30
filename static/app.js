@@ -4,15 +4,14 @@ let mediaRecorder;
 let audioChunks = [];
 let recordingStates = {};
 let activeRecordingSection = null;
-let audioContext = null;
-let analyserNode = null;
-let silenceDetectionActive = false;
-
-const SILENCE_THRESHOLD = 0.01;
-const SILENCE_DURATION_MS = 3500;
-const MIN_RECORDING_MS = 3000;
-let silenceStartTime = null;
+// let audioContext = null;
+// let analyserNode = null;
+// let silenceDetectionActive = false;
+// const SILENCE_THRESHOLD = 0.01;
+// const SILENCE_DURATION_MS = 3500;
+// let silenceStartTime = null;
 let recordingStartTime = null;
+const MIN_RECORDING_MS = 3000;
 
 let sessionContext = {};           // { v_code: value }
 let sessionConfidence = {};        // { v_code: 0..1 } – AI confidence per field
@@ -1337,7 +1336,15 @@ async function submitFinalForm() {
             alert(`خطا در ثبت نهایی: ${data.error}`);
             return;
         }
-        alert(`اطلاعات با موفقیت ثبت شد. (${data.saved} پاسخ ذخیره شد)`);
+        let msg = `اطلاعات با موفقیت ثبت شد. (${data.saved} پاسخ ذخیره شد)`;
+        if (data.health_check && data.health_check.check_id) {
+            msg += data.health_check.existing ? "\nچکاپ شما قبلاً ایجاد شده است." : "\n✓ چکاپ سلامت شما ایجاد شد — در داشبورد قابل مشاهده است.";
+        }
+        alert(msg);
+        if (data.health_check && data.health_check.check_id && !data.health_check.existing) {
+            window.location.href = `/health-check/${data.health_check.check_id}`;
+            return;
+        }
         // Lock further edits for this patient; require an explicit new start
         currentSubmissionId = null;
         document.getElementById('status-badge').textContent = 'ثبت شد';

@@ -11,6 +11,7 @@ from google.genai.types import (
     HttpOptions,
     HttpRetryOptions,
     GenerateContentConfig,
+    ThinkingConfig,
 )
 
 from app.core import config
@@ -286,7 +287,7 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=PromptGenerator._format_warning_schema(),
-                    temperature=0.0,
+                    thinking_config=ThinkingConfig(thinking_level="minimal"),
                 ),
             )
 
@@ -371,7 +372,7 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=PromptGenerator._format_warning_schema(),
-                    temperature=0.0,
+                    thinking_config=ThinkingConfig(thinking_level="minimal"),
                 ),
             )
 
@@ -650,17 +651,135 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=schema,
-                    temperature=0.0,
+                    thinking_config=ThinkingConfig(thinking_level="minimal"),
                 ),
             )
 
         response = _run_with_failover(_call, config.AUDIO_MODEL)
-        
+
         print("\n=== RAW RESPONSE ===")
         try:
             print(json.dumps(json.loads(response.text), indent=2, ensure_ascii=False))
         except Exception:
             print(response.text)
         print("=== END RAW ===\n")
-        
+
         return json.loads(response.text)
+
+    @staticmethod
+    def _health_schema():
+        return {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "2-3 sentence Persian closing note from the reviewing physician"},
+                "health_score": {"type": "integer", "description": "0-100 overall health assessment based strictly on the data"},
+                "overall_status": {"type": "string", "enum": ["good", "watch", "attention"]},
+                "sections": {
+                    "type": "array",
+                    "description": "Clinical domains found in the questionnaire (max 8)",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Persian domain name, e.g. قلب و عروق"},
+                            "status": {"type": "string", "enum": ["good", "watch", "attention"]},
+                            "points": {"type": "array", "items": {"type": "string"}, "description": "Precise clinical findings, each referencing the specific answer"},
+                        },
+                        "required": ["title", "status", "points"],
+                    },
+                },
+                "start_doing": {"type": "array", "items": {"type": "string"}},
+                "stop_doing": {"type": "array", "items": {"type": "string"}},
+                "keep_doing": {"type": "array", "items": {"type": "string"}},
+                "when_to_see_doctor": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "health_score", "overall_status", "sections", "start_doing", "stop_doing", "keep_doing", "when_to_see_doctor"],
+        }
+
+    @staticmethod
+    def _build_health_prompt(user_info, qa_lines, transcripts=None):
+        name = f"{user_info.get('first_name') or ''} {user_info.get('last_name') or ''}".strip()
+        sex_fa = {"male": "مرد", "female": "زن"}.get(user_info.get("sex"), user_info.get("sex") or "نامشخص")
+        age = user_info.get("age")
+        birth = user_info.get("birth_date_shamsi")
+
+        demo = f"بیمار: {name or 'نامشخص'} | جنسیت: {sex_fa} | سن: {age if age is not None else 'نامشخص'}"
+        if birth:
+            demo += f" | تاریخ تولد (شمسی): {birth}"
+
+        parts = [
+            "نقش تو: پزشک داخلی باتجربه‌ای که نتایج پرسشنامه غربالگری سلامت یک بیمار را دقیق بررسی می‌کند — همان‌طور که جواب آزمایش خون را خط به خط می‌خواند.",
+            "هر پاسخ را با دانش بالینی بسنج، مقادیر را با دامنه‌های طبیعی مقایسه کن، پاسخ‌های مرتبط را با هم ترکیب و تحلیل کن (مثلاً سیگار + سابقه خانوادگی + فشار خون)، و الگوهای پنهان را پیدا کن.",
+            "",
+            f"مشخصات بیمار: {demo}",
+            "",
+            "پاسخ‌های پرسشنامه (کد سوال، متن سوال، پاسخ، معنی گزینه‌ها):",
+        ]
+        parts.extend(qa_lines)
+
+        if transcripts:
+            parts.append("")
+            parts.append("متن پیاده‌شده صداها (مرجع تأییدی):")
+            for k, v in transcripts.items():
+                if v:
+                    parts.append(f"[{k}]: {str(v)[:800]}")
+
+        parts.append("""
+قواعد تحلیل:
+۱. سطر به سطر: هر پاسخ را تحلیل کن؛ مقدار طبیعی است یا نه؟ الگوی خطر دارد؟ با پاسخ دیگری تناقض دارد؟
+۲. ترکیب‌ها: پاسخ‌های مرتبط را با هم بسنج و پیامدهای ترکیبی را بگو.
+۳. ارجاع دقیق: هر یافته باید مستقیماً به کد سوال یا پاسخ مشخصی ارجاع بدهد. یافته کلی و بی‌ربط مطلقاً ممنوع است.
+۴. واقع‌بینی: اگر داده برای قضاوت کافی نیست، صادقانه بنویس «نیاز به اندازه‌گیری یا آزمایش تکمیلی دارد» به‌جای حدس زدن. هیچ علامت، بیماری یا عددی از خودت نساز.
+۵. «N/A» یعنی سوال به این بیمار مرتبط نبوده — هرگز آن را مشکل تلقی نکن.
+۶. لحن: گزارش پزشک به بیمار — مطمئن، تخصصی، شفاف، آرام. نه وحشت‌آفرین، نه سطحی و شعاری. از کلمات ترسناک پرهیز کن؛ به‌جای «خطر» بنویس «قابل پیگیری» یا «نیاز به توجه».
+۷. مهم: هیچ‌جا به هوش مصنوعی، مدل زبانی، سیستم یا نحوه تولید این گزارش اشاره نکن. گزارش باید دقیقاً مثل گزارشی باشد که یک پزشک نوشته است.
+۸. از کلی‌گویی خالی (مثل «حالتان خوب است، مراقب باشید») پرهیز کن. هر جمله باید محتوای بالینی مشخص داشته باشد.
+۹. توصیه‌ها باید عملی، مشخص و متناسب با یافته‌های همین بیمار باشند — نه توصیه‌های عمومی که برای هر کسی صادق است.
+۱۰. تمام متن خروجی فارسی است؛ کلیدهای JSON انگلیسی می‌مانند.
+
+ساختار خروجی (فقط JSON معتبر):
+- summary: جمع‌بندی ۲-۳ جمله‌ای نهایی پزشک؛ صادقانه، آرام و مشخص (برای ایمیل هم استفاده می‌شود).
+- health_score: عدد ۰ تا ۱۰۰؛ ارزیابی کلی فقط بر اساس همین داده‌ها.
+- overall_status: "good" (وضعیت رضایت‌بخش)، "watch" (چند مورد قابل پیگیری)، "attention" (مواردی نیاز به توجه جدی‌تر دارند).
+- sections: تا ۸ محور بالینی که در پرسشنامه وجود دارد (مثلاً قلب و عروق، تنفس، متابولیسم و دیابت، سلامت روان و خواب، دهان و دندان، سوانح و جراحی، سبک زندگی). هر محور: title، status، points (یافته‌های دقیق با ذکر کد سوال، معنی بالینی و اینکه چرا مهم است).
+- start_doing: کارهای مشخص که باید همین حالا شروع کند (هر آیتم یک جمله عملی).
+- stop_doing: کارهایی که باید قطع یا کم کند و چرا.
+- keep_doing: چیزهایی که خوب پیش می‌رود و باید ادامه دهد.
+- when_to_see_doctor: شرایط یا علائمی که مراجعه به پزشک را ضروری می‌کند؛ فقط موارد واقعاً لازم. اگر چیزی لازم نیست، آرایه خالی.
+""")
+
+        return "\n".join(parts)
+
+    @classmethod
+    def generate_health_check(cls, user_info, qa_lines, transcripts=None):
+        prompt = cls._build_health_prompt(user_info, qa_lines, transcripts)
+        schema = cls._health_schema()
+
+        def _call(client, model):
+            cfg = GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=schema,
+                temperature=0.3,
+                thinking_config=ThinkingConfig(thinking_level="high"),
+            )
+            return client.models.generate_content(model=model, contents=[prompt], config=cfg)
+
+        resp = _run_with_failover(_call, config.HEALTH_MODEL)
+        print("\n=== HEALTH RAW ===\n", resp.text[:4000], "\n=== END HEALTH ===\n")
+        try:
+            data = json.loads(resp.text)
+        except Exception as e:
+            print(f"[health] parse failed: {e}")
+            data = {"summary": resp.text[:500], "health_score": None, "overall_status": "watch",
+                    "sections": [], "start_doing": [], "stop_doing": [], "keep_doing": [], "when_to_see_doctor": []}
+        # normalize
+        data["summary"] = (data.get("summary") or "").strip()
+        for k in ("start_doing", "stop_doing", "keep_doing", "when_to_see_doctor"):
+            data[k] = [str(x) for x in (data.get(k) or []) if x]
+        data["sections"] = [s for s in (data.get("sections") or []) if s and s.get("title")]
+        try:
+            data["health_score"] = int(data.get("health_score") or 0)
+        except (TypeError, ValueError):
+            data["health_score"] = None
+        if data.get("overall_status") not in ("good", "watch", "attention"):
+            data["overall_status"] = "watch"
+        return {"summary": data["summary"], "report": data, "model": config.HEALTH_MODEL, "prompt": prompt}

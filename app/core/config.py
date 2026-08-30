@@ -23,6 +23,14 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # Default Gemini models per call type.
 AUDIO_MODEL = "gemini-3-flash-preview"
 ANOMALY_MODEL = "gemini-3-flash-preview"
+HEALTH_MODEL = os.getenv("GEMINI_HEALTH_MODEL", "gemini-3.1-flash-lite")
+
+# Brevo email
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL")
+BREVO_SENDER_NAME = os.getenv("BREVO_SENDER_NAME", "VCR")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://127.0.0.1:8000")
+MAIL_ENABLED = os.getenv("MAIL_ENABLED", "true").lower() not in ("0", "false", "no", "off")
 
 # Models tried (in order) when the primary model returns transient overload
 # ("high demand", 503/500). Full chain per call: [primary] + FALLBACK_MODELS.

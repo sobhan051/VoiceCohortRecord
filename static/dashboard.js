@@ -123,6 +123,29 @@ async function loadUserDashboard() {
                 </div>`;
         }
 
+        // Health check card — once per user when all 3 forms completed
+        let healthHtml = '';
+        try {
+            const hcRes = await fetch(`/api/health-check/by-user/${currentUser.user_id}`);
+            const hc = await hcRes.json();
+            const totalFormsNeeded = (data.open_forms.length + data.submissions.filter(s=>s.status==='completed').length) || 3;
+            const done = data.stats.completed_submissions;
+            if (hc.exists) {
+                healthHtml = `<div class="mb-8 bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-200 rounded-3xl p-6 shadow-sm">
+                    <div class="flex items-start justify-between gap-4">
+                        <div class="flex gap-3"><div class="bg-emerald-500 text-white p-3 rounded-2xl shrink-0"><svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+                        <div><h3 class="font-bold text-emerald-900">چکاپ سلامت شما آماده است</h3><p class="text-sm text-emerald-700 mt-1 leading-6">${hc.summary || ''}</p></div></div>
+                    </div>
+                    <a href="/health-check/${hc.check_id}" class="inline-block mt-4 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-xl text-sm font-bold transition">مشاهده چکاپ کامل</a>
+                </div>`;
+            } else if (done >= totalFormsNeeded && totalFormsNeeded>0) {
+                healthHtml = `<div class="mb-8 bg-amber-50 border border-amber-200 rounded-3xl p-6 text-center"><p class="text-amber-800 font-bold">همه فرم‌ها تکمیل شد — چکاپ در حال آماده‌سازی...</p><p class="text-sm text-amber-600 mt-1">صفحه را بعد از چند لحظه تازه کنید</p></div>`;
+            } else if (totalFormsNeeded>0) {
+                healthHtml = `<div class="mb-8 bg-white border border-gray-100 rounded-3xl p-6"><div class="flex items-center justify-between"><div><h3 class="font-bold text-gray-800">چکاپ سلامت</h3><p class="text-sm text-gray-500 mt-1">${done} از ${totalFormsNeeded} فرم تکمیل شده — پس از تکمیل همه، چکاپ هوشمند ایجاد می‌شود</p></div><div class="flex gap-1">${Array.from({length: totalFormsNeeded},(_,i)=>`<span class="w-3 h-3 rounded-full ${i<done?'bg-emerald-500':'bg-gray-200'}"></span>`).join('')}</div></div></div>`;
+            }
+        } catch(e) {}
+        html += healthHtml;
+
         if (submissions.length > 0) {
             html += `
                 <div class="mb-8">
@@ -391,15 +414,24 @@ async function loadAdminUsers(container) {
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">نام خانوادگی</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">نقش</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">تعداد پرسشنامه</th>
+                                <th class="text-right p-4 text-sm font-bold text-gray-600">چکاپ</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">عملیات</th>
                             </tr>
                         </thead>
                         <tbody>`;
+        // fetch health check existence per user (best-effort, no block if fails)
+        let hcMap = {};
+        try {
+            await Promise.all(users.map(async u => {
+                try { const r = await fetch(`/api/health-check/by-user/${u.user_id}`); const j = await r.json(); hcMap[u.user_id] = !!j.exists; } catch { hcMap[u.user_id]=false; }
+            }));
+        } catch {}
         if (users.length === 0) {
-            html += `<tr><td colspan="6" class="text-center p-8 text-gray-500">هیچ کاربری یافت نشد</td></tr>`;
+            html += `<tr><td colspan="7" class="text-center p-8 text-gray-500">هیچ کاربری یافت نشد</td></tr>`;
         } else {
             users.forEach(user => {
                 const roleLabel = user.role === 2 ? 'مدیر' : 'کاربر';
+                const hasHc = hcMap[user.user_id];
                 html += `
                     <tr class="border-b hover:bg-gray-50 transition">
                         <td class="p-4 text-sm">${user.national_code}</td>
@@ -407,6 +439,10 @@ async function loadAdminUsers(container) {
                         <td class="p-4 text-sm">${user.last_name || '-'}</td>
                         <td class="p-4 text-sm"><span class="px-2 py-1 rounded-full text-xs ${user.role === 2 ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}">${roleLabel}</span></td>
                         <td class="p-4 text-sm">${user.submission_count}</td>
+                        <td class="p-4 text-sm">
+                            ${hasHc ? `<a href="/api/health-check/by-user/${user.user_id}" onclick="event.preventDefault(); viewHealth('${user.user_id}')" class="text-emerald-600 hover:text-emerald-800 text-xs font-bold">مشاهده ✓</a>`
+                              : `<button onclick="triggerHealth('${user.user_id}', this)" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-lg text-xs">درخواست چکاپ</button>`}
+                        </td>
                         <td class="p-4 flex gap-2">
                             <button onclick="editAdminUser('${user.user_id}')" class="text-blue-600 hover:text-blue-800 text-sm">ویرایش</button>
                             <button onclick="deleteAdminUser('${user.user_id}')" class="text-red-600 hover:text-red-800 text-sm">حذف</button>
@@ -476,6 +512,23 @@ async function deleteAdminUser(userId) {
         alert('کاربر با موفقیت حذف شد');
         showAdminSection('users');
     } catch (e) { alert('خطا در حذف کاربر'); }
+}
+async function triggerHealth(userId, btn) {
+    if (!confirm('چکاپ برای این کاربر ایجاد شود؟ (فقط در صورت تکمیل همه فرم‌ها)')) return;
+    const orig = btn.textContent; btn.textContent='...'; btn.disabled=true;
+    try {
+        const res = await fetch(`/api/admin/health-check/${userId}`, {method:'POST'});
+        const j = await res.json();
+        if (j.error) { alert(j.error); } else { alert('چکاپ با موفقیت ایجاد شد'); showAdminSection('users'); return; }
+    } catch(e){ alert('خطا در ایجاد چکاپ'); }
+    btn.textContent=orig; btn.disabled=false;
+}
+async function viewHealth(userId) {
+    try {
+        const r = await fetch(`/api/health-check/by-user/${userId}`); const j = await r.json();
+        if (j.exists) window.open(`/health-check/${j.check_id}`, '_blank');
+        else alert('چکاپ یافت نشد');
+    } catch{ alert('خطا'); }
 }
 
 // ---------- Forms Management (Hierarchical with Sections & Questions) ----------

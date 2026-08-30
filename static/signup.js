@@ -32,6 +32,9 @@ document.getElementById('signup-form').addEventListener('submit', async (e) => {
     const last = document.getElementById('signup-last').value.trim();
     const national = digitsOnly(document.getElementById('signup-national').value.trim());
     const phone = digitsOnly(document.getElementById('signup-phone').value.trim());
+    const email = document.getElementById('signup-email').value.trim();
+    const sex = document.getElementById('signup-sex').value;
+    const birth = digitsOnly(document.getElementById('signup-birth').value.trim());
 
     if (!first || !last) {
         showError('نام و نام خانوادگی را وارد کنید.');
@@ -45,13 +48,15 @@ document.getElementById('signup-form').addEventListener('submit', async (e) => {
         showError('شماره تماس باید با ۰۹ شروع شده و ۱۱ رقم باشد.');
         return;
     }
+    if (email && !/[^@]+@[^@]+\.[^@]+/.test(email)) { showError('ایمیل نامعتبر است.'); return; }
+    if (birth && !/^\d{4}([\/-]\d{1,2}[\/-]\d{1,2})?$/.test(birth)) { showError('تاریخ تولد را به شکل 1382/05/14 یا 1382 وارد کنید.'); return; }
 
     setBusy(true);
     try {
         const res = await fetch('/api/signup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ first_name: first, last_name: last, national_code: national, phone_number: phone }),
+            body: JSON.stringify({ first_name: first, last_name: last, national_code: national, phone_number: phone, email: email || null, sex: sex || null, birth_date: birth || null }),
         });
         const data = await res.json();
         if (data.error) {

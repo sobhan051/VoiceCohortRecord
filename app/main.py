@@ -11,7 +11,7 @@ from app import models
 from app.core.config import STATIC_DIR, UPLOAD_DIR
 from app.db.base import Base
 from app.db.session import engine
-from app.routers import admin, auth, pages, questionnaire
+from app.routers import admin, auth, health, pages, questionnaire
 
 
 def create_app() -> FastAPI:
@@ -29,6 +29,7 @@ def create_app() -> FastAPI:
     app.include_router(questionnaire.router)
     app.include_router(admin.router)
     app.include_router(auth.router)
+    app.include_router(health.router)
 
     return app
 

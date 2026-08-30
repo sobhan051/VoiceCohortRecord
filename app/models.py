@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, ForeignKey, Text, DateTime, Float, Boolean
+from sqlalchemy import Column, String, Integer, ForeignKey, Text, DateTime, Float, Boolean, Date
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
@@ -12,6 +12,9 @@ class User(Base):
     last_name = Column(String(100))
     national_code = Column(String(20), nullable=False, unique=True)
     phone_number = Column(String(20))
+    email = Column(String(255), nullable=True)
+    sex = Column(String(10), nullable=True)  # male/female
+    birth_date = Column(Date, nullable=True)  # Gregorian; input is Shamsi
     role = Column(Integer, default=1)  # 1=regular user, 2=admin, etc.
     created_at = Column(DateTime, server_default=func.now())
 
@@ -86,4 +89,16 @@ class ApiLog(Base):
     prompt_sent = Column(Text)
     response_received = Column(Text)
     tokens_used = Column(Integer)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class HealthCheck(Base):
+    __tablename__ = "health_checks"
+    check_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.user_id"), unique=True, nullable=False)
+    summary = Column(Text, nullable=False)
+    full_report = Column(Text, nullable=False)
+    full_report_html = Column(Text, nullable=True)
+    model_name = Column(String(100))
+    prompt_sent = Column(Text)
     created_at = Column(DateTime, server_default=func.now())

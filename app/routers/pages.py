@@ -38,6 +38,12 @@ async def dashboard_page():
     return FileResponse(str(STATIC_DIR / "dashboard.html"))
 
 
+@router.get("/health-check/{check_id}")
+async def health_check_page(check_id: str):
+    """Serve the health check report page (data fetched client-side)."""
+    return FileResponse(str(STATIC_DIR / "health-check.html"))
+
+
 @router.get("/cdn/tailwindcss")
 async def tailwind_css():
     """Proxy cdn.tailwindcss.com through the server."""
