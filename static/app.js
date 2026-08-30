@@ -1405,6 +1405,11 @@ document.addEventListener('change', function(event) {
     updateProgressPanel();
 });
 
+// Sanity check runs at most once per submission session. If warnings are found
+// they're shown and the user can edit + submit again — the second click saves
+// directly without re-running the check (no confirm/alert loop).
+let finalSanityDone = false;
+
 async function submitFinalForm() {
     if (!currentSubmissionId) {
         alert('هنوز نشست پرسشنامه شروع نشده است. لطفاً صفحه را مجدداً بارگذاری کنید.');
@@ -1415,39 +1420,45 @@ async function submitFinalForm() {
     const originalLabel = submitBtn ? submitBtn.textContent : '';
     if (submitBtn) {
         submitBtn.disabled = true;
-        submitBtn.textContent = 'در حال بررسی...';
+        submitBtn.textContent = finalSanityDone ? 'در حال ذخیره...' : 'در حال بررسی...';
     }
 
     try {
-        // Final whole-form cross-section sanity pass before locking the record.
-        const finalResp = await fetch('/check-final-anomalies', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                submission_id: currentSubmissionId,
-                answers: sessionContext,
-                confidence_reasons: sessionConfidenceReasons,
-            })
-        });
-        const finalData = await finalResp.json();
-        if (!finalData.error && finalData.warnings && finalData.warnings.length > 0) {
-            finalData.warnings.forEach(w => {
+        // Final whole-form cross-section sanity pass — only the first click.
+        if (!finalSanityDone) {
+            const finalResp = await fetch('/check-final-anomalies', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    submission_id: currentSubmissionId,
+                    answers: sessionContext,
+                    confidence_reasons: sessionConfidenceReasons,
+                })
+            });
+            const finalData = await finalResp.json();
+            const warnings = (!finalData.error && finalData.warnings) ? finalData.warnings : [];
+            warnings.forEach(w => {
                 if (!fieldWarnings[w.v_code]) fieldWarnings[w.v_code] = [];
                 fieldWarnings[w.v_code].push({
                     message: w.message,
                     severity: w.severity || 'warning'
                 });
             });
-            applyFieldWarnings();
-            updateSectionBadges();
-            updateWarningPanel();
-        }
+            finalSanityDone = true;
 
-        // Warn (but don't block) if anomalies are still open
-        const openWarnings = Object.values(fieldWarnings).reduce((s, a) => s + a.length, 0);
-        if (openWarnings > 0 &&
-            !confirm(`${openWarnings} هشدار بررسی‌نشده وجود دارد. آیا مطمئن هستید که می‌خواهید ثبت نهایی کنید؟`)) {
-            return;
+            if (warnings.length > 0) {
+                applyFieldWarnings();
+                updateSectionBadges();
+                updateWarningPanel();
+                const list = document.getElementById('warning-list');
+                if (list) list.classList.add('active');
+                // Scroll to the first flagged field so the user sees it.
+                const first = warnings.find(w => w.v_code && w.v_code !== 'general');
+                const el = first ? document.querySelector(`[data-vcode="${first.v_code}"]`) : null;
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                showToast(`${warnings.length} هشدار یافت شد — فیلدهای مشخص‌شده را در صورت نیاز اصلاح کنید و دوباره ثبت کنید.`);
+                return; // don't save yet; next click saves without re-checking
+            }
         }
 
         // Collect grouped answers before submit
@@ -1491,6 +1502,7 @@ async function submitFinalForm() {
         }
         // Lock further edits for this patient; require an explicit new start
         currentSubmissionId = null;
+        finalSanityDone = false;
         document.getElementById('status-badge').textContent = 'ثبت شد';
     } catch (err) {
         console.error('complete-submission failed:', err);
