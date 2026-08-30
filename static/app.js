@@ -20,6 +20,7 @@ let sessionConfidenceReasons = {}; // { v_code: reason } – why confidence is b
 let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value } }
 let fieldWarnings = {};           // { v_code: [ { message, severity } ] }
 let currentSubmissionId = null;   // set once a patient/submission is started
+let questionRulesMap = {};        // { v_code: {logic, rules} } – question dependency rules (visibility_rules)
 let lastAudioBySection = {};      // { section_key: Blob } – kept so a failed send can be retried without re-recording
 let sectionProgressData = {};     // { section_key: { name_fa, total, answered } } – for the progress panel
 
@@ -241,6 +242,132 @@ function updateQuestionVisibility() {
         sectionEl.style.display = sectionShouldShow ? '' : 'none';
         sectionEl.style.opacity = sectionShouldShow ? '1' : '0';
     });
+
+    // Question-level dependency rules (questions.visibility_rules JSONB)
+    applyQuestionRulesVisibility();
+}
+
+// ---------- Question-Level Dependency Rules (visibility_rules JSONB) ----------
+function normalizeRules(raw) {
+    if (!raw) return null;
+    let rules = raw;
+    if (typeof rules === 'string') {
+        try { rules = JSON.parse(rules); } catch (e) { return null; }
+    }
+    if (!rules || typeof rules !== 'object' || !Array.isArray(rules.rules)) return null;
+    const clean = rules.rules
+        .filter(r => r && r.v_code && Array.isArray(r.values) && r.values.length > 0)
+        .map(r => ({ v_code: String(r.v_code), values: r.values.map(String) }));
+    if (clean.length === 0) return null;
+    return { logic: rules.logic === 'any' ? 'any' : 'all', rules: clean };
+}
+
+// Effective answer for a parent v_code — collapses grouped BASE_0/BASE_1
+// entries into one comma-joined value (multi-select semantics).
+function getEffectiveAnswer(vcode) {
+    const direct = sessionContext[vcode];
+    if (direct !== undefined && direct !== null && direct !== '') return String(direct);
+    const entries = [];
+    Object.entries(sessionContext).forEach(([key, val]) => {
+        const m = key.match(/^(.+?)_(\d+)$/);
+        if (m && m[1] === vcode && val !== undefined && val !== null && val !== '') {
+            entries.push([parseInt(m[2]), String(val)]);
+        }
+    });
+    if (entries.length === 0) return null;
+    entries.sort((a, b) => a[0] - b[0]);
+    return entries.map(e => e[1]).join(',');
+}
+
+// Mirror of app/services/visibility.py — keep the two in sync.
+function isQuestionApplicable(vcode) {
+    const rules = questionRulesMap[vcode];
+    if (!rules) return true;
+    const results = rules.rules.map(rule => {
+        let parentValue = getEffectiveAnswer(rule.v_code);
+        if (parentValue === null || parentValue === undefined) return false;
+        parentValue = String(parentValue).trim();
+        if (parentValue === '' || parentValue.toUpperCase() === 'N/A') return false;
+        const allowed = rule.values.map(String);
+        if (parentValue.includes(',')) {
+            const selected = parentValue.split(',').map(v => v.trim()).filter(Boolean);
+            return selected.some(v => allowed.includes(v));
+        }
+        return allowed.includes(parentValue);
+    });
+    return rules.logic === 'any' ? results.some(Boolean) : results.every(Boolean);
+}
+
+// Disable + clear + tag «غیرمرتبط» on every question whose dependency is not
+// met, and restore fields whose dependency becomes satisfied. Runs inside
+// updateQuestionVisibility() so it re-evaluates on every answer change.
+function applyQuestionRulesVisibility() {
+    Object.keys(questionRulesMap).forEach(vcode => {
+        const applicable = isQuestionApplicable(vcode);
+
+        // Every rendered input of this question: plain v_code + grouped BASE_N
+        const inputs = Array.from(document.querySelectorAll('[data-vcode]'))
+            .filter(inp => inp.dataset.vcode === vcode ||
+                (inp.dataset.vcode + '_').startsWith(vcode + '_'));
+
+        const isGrouped = Object.values(groupedQuestionsMap).some(qs =>
+            qs.some(q => q.v_code === vcode));
+
+        if (!applicable) {
+            inputs.forEach(input => {
+                if (input.type === 'radio' || input.type === 'checkbox') {
+                    input.checked = false;
+                } else {
+                    if (input.dataset.origPlaceholder === undefined) {
+                        input.dataset.origPlaceholder = input.placeholder || '';
+                    }
+                    input.value = '';
+                    input.placeholder = 'غیرمرتبط';
+                }
+                input.disabled = true;
+                input.dataset.na = '1';
+                const container = input.closest('.md\\:col-span-2') ||
+                    input.closest('.flex.flex-col') || input.parentElement;
+                if (container) container.classList.add('opacity-50');
+            });
+            if (isGrouped) {
+                Object.keys(sessionContext).forEach(k => {
+                    const m = k.match(/^(.+?)_(\d+)$/);
+                    if (m && m[1] === vcode) sessionContext[k] = 'N/A';
+                });
+            } else {
+                sessionContext[vcode] = 'N/A';
+            }
+        } else {
+            inputs.forEach(input => {
+                input.disabled = false;
+                delete input.dataset.na;
+                if (input.type !== 'radio' && input.type !== 'checkbox' &&
+                    input.dataset.origPlaceholder !== undefined) {
+                    input.placeholder = input.dataset.origPlaceholder;
+                }
+                const container = input.closest('.md\\:col-span-2') ||
+                    input.closest('.flex.flex-col') || input.parentElement;
+                if (container) container.classList.remove('opacity-50');
+            });
+            // Drop the auto "N/A" state now that the field applies again
+            Object.keys(sessionContext).forEach(k => {
+                const m = k.match(/^(.+?)_(\d+)$/);
+                if ((k === vcode || (m && m[1] === vcode)) &&
+                    String(sessionContext[k]).toUpperCase() === 'N/A') {
+                    delete sessionContext[k];
+                }
+            });
+        }
+
+        // «غیرمرتبط» badge(s) — plain id for normal questions, one per
+        // rendered group entry (na-badge-BASE_N) for grouped ones.
+        const badges = [];
+        const plainBadge = document.getElementById(`na-badge-${vcode}`);
+        if (plainBadge) badges.push(plainBadge);
+        document.querySelectorAll(`[id^="na-badge-${vcode}_"]`).forEach(b => badges.push(b));
+        badges.forEach(b => { b.style.display = applicable ? 'none' : 'inline-block'; });
+    });
 }
 
 // ---------- Rendering ----------
@@ -278,7 +405,7 @@ function renderGroupContainer(groupPair) {
         <div class="md:col-span-2 group-container" id="group-${groupPair}" data-group-pair="${groupPair}">
             <div class="bg-blue-50 border-2 border-blue-100 rounded-2xl p-4 space-y-4">
                 <div class="flex items-center justify-between mb-2">
-                    <h3 class="text-sm font-bold text-blue-700">${label} — گروه تکراری</h3>
+                    <h3 class="text-sm font-bold text-blue-700">${label}</h3>
                     <span class="text-xs text-blue-500 bg-blue-100 px-2 py-1 rounded-full" id="group-count-${groupPair}">${count} ردیف</span>
                 </div>
                 <div id="group-entries-${groupPair}" class="space-y-4">
@@ -389,6 +516,8 @@ function collectGroupedAnswers() {
         entry.querySelectorAll('[data-vcode]').forEach(inp => {
             const rawVcode = inp.dataset.vcode;
             if (rawVcode && /_\d+$/.test(rawVcode)) {
+                // N/A-tagged (dependency not met) fields keep their "N/A" state
+                if (inp.dataset.na === '1') return;
                 if (inp.type === 'radio') {
                     if (inp.checked) sessionContext[rawVcode] = inp.value;
                 } else if (inp.type === 'checkbox') {
@@ -518,6 +647,12 @@ function renderForm(sections) {
             total: section.questions ? section.questions.length : 0,
             answered: 0
         };
+
+        // Collect question-level dependency rules (before the grouped filter)
+        (section.questions || []).forEach(q => {
+            const rules = normalizeRules(q.visibility_rules);
+            if (rules) questionRulesMap[q.v_code] = rules;
+        });
 
         // Now remove grouped questions from rendering (already counted above)
         section.questions = (section.questions || []).filter(q => !q.group_pair);
@@ -711,7 +846,10 @@ function renderQuestion(q) {
         }
         return `
             <div class="md:col-span-2 space-y-3">
-                <label class="block text-gray-700 font-bold">${q.question_text_fa}</label>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <label class="block text-gray-700 font-bold">${q.question_text_fa}</label>
+                    <span id="na-badge-${q.v_code}" style="display:none" class="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full border border-gray-200">غیرمرتبط</span>
+                </div>
                 <div class="flex flex-wrap gap-4">
                     ${Object.entries(options || {}).map(([key, val]) => `
                         <label class="flex items-center gap-3 border-2 border-gray-100 px-4 py-3 rounded-2xl cursor-pointer hover:border-blue-200 hover:bg-blue-50 transition-all">
@@ -730,7 +868,10 @@ function renderQuestion(q) {
         }
         return `
             <div class="md:col-span-2 space-y-3">
-                <label class="block text-gray-700 font-bold">${q.question_text_fa}</label>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <label class="block text-gray-700 font-bold">${q.question_text_fa}</label>
+                    <span id="na-badge-${q.v_code}" style="display:none" class="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full border border-gray-200">غیرمرتبط</span>
+                </div>
                 <div class="flex flex-wrap gap-4">
                     ${Object.entries(options || {}).map(([key, val]) => `
                         <label class="flex items-center gap-3 border-2 border-gray-100 px-4 py-3 rounded-2xl cursor-pointer hover:border-blue-200 hover:bg-blue-50 transition-all">
@@ -744,7 +885,10 @@ function renderQuestion(q) {
     }
     return `
         <div class="flex flex-col gap-2 relative">
-            <label class="text-gray-600 text-sm font-medium">${q.question_text_fa}</label>
+            <div class="flex items-center gap-2 flex-wrap">
+                <label class="text-gray-600 text-sm font-medium">${q.question_text_fa}</label>
+                <span id="na-badge-${q.v_code}" style="display:none" class="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full border border-gray-200">غیرمرتبط</span>
+            </div>
             <div class="relative">
                 <input type="text" data-vcode="${q.v_code}"
                        class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner"

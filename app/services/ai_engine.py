@@ -14,6 +14,7 @@ from google.genai.types import (
 )
 
 from app.core import config
+from app.services.visibility import parse_rules
 
 # HTTP status codes worth retrying on a different key / after a backoff:
 #   429 RESOURCE_EXHAUSTED  -> that key is out of quota / rate limited
@@ -571,6 +572,29 @@ class PromptGenerator:
                     f"CODE {q.v_code} | Question: {q_text} | Type: {q_type}. Extract the value, return null if missing.{group_note}"
                 )
 
+        # Dependency rules from questions.visibility_rules (JSONB). These are
+        # binding — the backend re-checks them after extraction, but telling
+        # the model up front avoids wasted or contradictory values.
+        dep_lines = []
+        for q in questions:
+            rules = parse_rules(getattr(q, "visibility_rules", None))
+            if not rules:
+                continue
+            rule_strs = [
+                "[" + " OR ".join(f"{r['v_code']}={v}" for v in r["values"]) + "]"
+                for r in rules["rules"]
+            ]
+            joiner = " OR " if rules["logic"] == "any" else " AND "
+            dep_lines.append(
+                f"{q.v_code}: applies only if " + joiner.join(rule_strs)
+                + "; if the condition is not satisfied return \"N/A\" for it."
+            )
+        if dep_lines:
+            specs.append(
+                "\nDEPENDENCY RULES (a question that does not apply must be \"N/A\"):\n"
+                + "\n".join(dep_lines)
+            )
+
         prompt = (
             "You are a medical data entry assistant. "
             "Transcribe the audio in Farsi and analyze it and extract answers according to the rules below.\n\n"
@@ -592,7 +616,9 @@ class PromptGenerator:
             "question clearly NOT APPLICABLE, set its value to exactly \"N/A\" with "
             "confidence 1 and reason \"غیرمرتبط\". Only do this when another stated "
             "answer rules the question out — never merely because the value was not "
-            "mentioned.\n\n"
+            "mentioned. The questions listed under DEPENDENCY RULES are binding: "
+            "when their condition is not satisfied by the stated answers, that "
+            "field MUST be \"N/A\".\n\n"
             "For every field also provide a confidence score between 0 and 1 "
             "(0 = completely guessing, 1 = absolutely certain). "
             "The confidence must be below 1 whenever the value was hard to hear, "

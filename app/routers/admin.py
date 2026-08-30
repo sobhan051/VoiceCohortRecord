@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.db.session import get_db
+from app.services.visibility import parse_rules
 
 
 def _int(val):
@@ -417,6 +418,7 @@ async def admin_section_questions(section_id: str, db: Session = Depends(get_db)
             "manual_prompt": q.manual_prompt,
             "sort_order": q.sort_order,
             "group_pair": q.group_pair,
+            "visibility_rules": q.visibility_rules,
         }
         for q in questions
     ]
@@ -437,6 +439,7 @@ async def admin_create_question(payload: dict, db: Session = Depends(get_db)):
             manual_prompt=payload.get("manual_prompt"),
             sort_order=payload.get("sort_order", 0),
             group_pair=payload.get("group_pair"),
+            visibility_rules=parse_rules(payload.get("visibility_rules")),
         )
         db.add(q)
         db.commit()
@@ -459,6 +462,8 @@ async def admin_update_question(question_id: str, payload: dict, db: Session = D
                   "coding_options", "unit", "manual_prompt", "sort_order", "group_pair"):
         if field in payload:
             setattr(q, field, payload[field])
+    if "visibility_rules" in payload:
+        q.visibility_rules = parse_rules(payload["visibility_rules"])
     if "section_id" in payload:
         q.section_id = _int(payload["section_id"])
     db.commit()

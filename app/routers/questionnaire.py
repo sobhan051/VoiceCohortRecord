@@ -15,6 +15,7 @@ from app import models
 from app.core.config import UPLOAD_DIR
 from app.db.session import get_db
 from app.services.ai_engine import PromptGenerator
+from app.services.visibility import normalize_answers
 from app.services.responses import upsert_response
 
 router = APIRouter()
@@ -70,7 +71,13 @@ async def check_section_anomalies(
         models.Question.section_id == section.section_id
     ).all()
 
-    # Build metadata for only those questions
+    # Dependency normalization (questions.visibility_rules): rules may
+    # reference parents recorded in other sections, so evaluate against the
+    # FULL answer set, then keep only this section's fields.
+    normalized_answers, applicable_map = normalize_answers(questions, answers)
+
+    # Build metadata for applicable questions only — a non-applicable question
+    # (forced "N/A") must never be flagged by the sanity checker.
     questions_meta = [
         {
             "v_code": q.v_code,
@@ -80,6 +87,7 @@ async def check_section_anomalies(
             "coding_options": q.coding_options,
         }
         for q in questions
+        if applicable_map.get(q.v_code, True)
     ]
 
     # Filter answers to only include the section’s v_codes + perhaps gender (A4) for cross‑consistency
@@ -88,7 +96,7 @@ async def check_section_anomalies(
     # if "A4" in answers:
     #     relevant_vcodes.add("A4")
 
-    filtered_answers = {v: answers[v] for v in relevant_vcodes if v in answers}
+    filtered_answers = {v: normalized_answers[v] for v in relevant_vcodes if v in normalized_answers}
 
     # Pull the verbatim transcript of this section's recording from the stored
     # responses so the checker can confirm suspicious readings and catch
@@ -157,13 +165,21 @@ async def check_final_anomalies(
         if q.section_id in sections_by_id
     }
 
+    # Dependency normalization (questions.visibility_rules) over the whole
+    # answer set; non-applicable questions are excluded from the check.
+    normalized_answers, applicable_map = normalize_answers(
+        list(vcode_to_question.values()), answers
+    )
+
     # Group the current answer set by section for the model.
     all_questions_meta = {}
-    for vc, val in answers.items():
+    for vc, val in normalized_answers.items():
         if val is None or val == "":
             continue
         q = vcode_to_question.get(vc)
         if not q:
+            continue
+        if applicable_map.get(vc, True) is False:
             continue
         sk = vcode_to_section.get(vc, "سایر")
         all_questions_meta.setdefault(sk, []).append({
@@ -188,7 +204,7 @@ async def check_final_anomalies(
 
     try:
         warnings = PromptGenerator.check_final_anomalies(
-            answers, all_questions_meta, transcripts, confidence_reasons
+            normalized_answers, all_questions_meta, transcripts, confidence_reasons
         )
         return {"warnings": warnings}
     except Exception as e:
@@ -344,6 +360,11 @@ async def complete_submission(
     # Cache questions by v_code so manual-only fields still link to their question
     questions = {q.v_code: q for q in db.query(models.Question).all()}
 
+    # Dependency normalization (questions.visibility_rules): non-applicable
+    # answers are stored as "N/A"; "N/A" values on applicable questions are
+    # dropped so they don't pollute the record.
+    answers, _applicable_map = normalize_answers(list(questions.values()), answers)
+
     saved = 0
     for v_code, value in answers.items():
         if value is None or value == "":
@@ -463,6 +484,28 @@ async def process_voice(
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')
         confidence_map = result.get('confidence', {}) or {}
+
+        # Dependency normalization (questions.visibility_rules): merge the
+        # submission's saved answers (parents may live in sections recorded
+        # earlier) with the fresh extraction, force "N/A" for non-applicable
+        # questions and clear bogus "N/A" values, then keep only this
+        # section's keys for saving/returning.
+        merged = {}
+        if sub_id:
+            for r in db.query(models.Response).filter(
+                models.Response.submission_id == sub_id
+            ).all():
+                if r.extracted_value is not None:
+                    merged[r.v_code] = r.extracted_value
+        merged.update({k: v for k, v in extracted_data.items() if v is not None})
+        merged, _applicable_map = normalize_answers(questions, merged)
+        section_vcodes = {q.v_code for q in questions}
+        filtered_data = {}
+        for k, v in merged.items():
+            m = re.match(r'^(.+?)_(\d+)$', k)
+            if (m.group(1) if m else k) in section_vcodes:
+                filtered_data[k] = v
+        extracted_data = filtered_data
 
         # Save responses
         for v_code, val in extracted_data.items():

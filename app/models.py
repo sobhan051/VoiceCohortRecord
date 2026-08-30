@@ -49,6 +49,7 @@ class Question(Base):
     manual_prompt = Column(Text)
     sort_order = Column(Integer, default=0)
     group_pair = Column(String(100), nullable=True)
+    visibility_rules = Column(JSONB, nullable=True)
 
 
 class Submission(Base):

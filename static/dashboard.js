@@ -747,6 +747,7 @@ async function showQuestionModal(questionData) {
     document.getElementById('q-prompt').value = questionData?.manual_prompt || '';
     document.getElementById('q-order').value = questionData?.sort_order ?? 0;
     document.getElementById('q-group-pair').value = questionData?.group_pair || '';
+    document.getElementById('q-visibility-rules').value = questionData?.visibility_rules ? JSON.stringify(questionData.visibility_rules, null, 2) : '';
 
     // Populate section dropdown — only sections belonging to the selected form
     const sectionSelect = document.getElementById('question-section-id');
@@ -800,6 +801,13 @@ document.getElementById('question-form').addEventListener('submit', async (e) =>
         catch (e) { alert('فرمت JSON گزینه‌ها نامعتبر است'); return; }
     }
 
+    let visibilityRules = null;
+    const rawRules = document.getElementById('q-visibility-rules').value.trim();
+    if (rawRules) {
+        try { visibilityRules = JSON.parse(rawRules); }
+        catch (e) { alert('فرمت JSON قوانین نمایش شرطی نامعتبر است'); return; }
+    }
+
     const payload = {
         section_id: document.getElementById('question-section-id').value,
         v_code: document.getElementById('q-vcode').value,
@@ -811,6 +819,7 @@ document.getElementById('question-form').addEventListener('submit', async (e) =>
         manual_prompt: document.getElementById('q-prompt').value,
         sort_order: parseInt(document.getElementById('q-order').value) || 0,
         group_pair: document.getElementById('q-group-pair').value || null,
+        visibility_rules: visibilityRules,
     };
     try {
         let res;
