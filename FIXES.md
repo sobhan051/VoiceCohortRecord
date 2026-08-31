@@ -4,3 +4,6 @@
 - [ ] Fix(finetune) audio processing configs if needed 
 - [ ] change the bitrate to 64K if needed 
 - [x] pill names more than one fix (داروهای مصرفی)
+- [x] Fix group pair sort_order
+- [x] Fix counter of the visible rule questions 
+- [x] make the question text applicable as static   

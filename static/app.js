@@ -279,30 +279,55 @@ function getEffectiveAnswer(vcode) {
 }
 
 // Mirror of app/services/visibility.py — keep the two in sync.
-function isQuestionApplicable(vcode) {
+// Tri-state evaluation: 'applicable' (dependency met), 'na' (dependency
+// explicitly failed — a parent was ANSWERED with a non-qualifying value), or
+// 'pending' (a parent hasn't been answered yet). The pending state is what
+// keeps the progress bar from counting the question before its dependency is
+// actually resolved by an answer.
+function getQuestionRuleState(vcode) {
     const rules = questionRulesMap[vcode];
-    if (!rules) return true;
+    if (!rules) return 'applicable';
     const results = rules.rules.map(rule => {
         let parentValue = getEffectiveAnswer(rule.v_code);
-        if (parentValue === null || parentValue === undefined) return false;
+        if (parentValue === null || parentValue === undefined) return 'pending';
         parentValue = String(parentValue).trim();
-        if (parentValue === '' || parentValue.toUpperCase() === 'N/A') return false;
+        if (parentValue === '') return 'pending';
+        if (parentValue.toUpperCase() === 'N/A') return 'fail';
         const allowed = rule.values.map(String);
         if (parentValue.includes(',')) {
             const selected = parentValue.split(',').map(v => v.trim()).filter(Boolean);
-            return selected.some(v => allowed.includes(v));
+            return selected.some(v => allowed.includes(v)) ? 'pass' : 'fail';
         }
-        return allowed.includes(parentValue);
+        return allowed.includes(parentValue) ? 'pass' : 'fail';
     });
-    return rules.logic === 'any' ? results.some(Boolean) : results.every(Boolean);
+    if (rules.logic === 'any') {
+        if (results.includes('pass')) return 'applicable';
+        if (results.includes('pending')) return 'pending';
+        return 'na';
+    }
+    // logic "all"
+    if (results.includes('pending')) return 'pending';
+    return results.every(r => r === 'pass') ? 'applicable' : 'na';
+}
+
+// Wrapper around JUST the control (options row / input box) — dimming for
+// non-applicable/pending questions must never touch the question text, which
+// stays fully readable (full opacity) while the field worker records.
+function getControlWrapper(input) {
+    if (input.type === 'radio' || input.type === 'checkbox') {
+        return input.closest('.flex.flex-wrap') || input.closest('label') || input.parentElement;
+    }
+    return input.closest('.relative') || input.parentElement;
 }
 
 // Disable + clear + tag «غیرمرتبط» on every question whose dependency is not
 // met, and restore fields whose dependency becomes satisfied. Runs inside
 // updateQuestionVisibility() so it re-evaluates on every answer change.
+// NOTE: only the controls (options/inputs) are dimmed — the question text is
+// never greyed out or lightened.
 function applyQuestionRulesVisibility() {
     Object.keys(questionRulesMap).forEach(vcode => {
-        const applicable = isQuestionApplicable(vcode);
+        const state = getQuestionRuleState(vcode);
 
         // Every rendered input of this question: plain v_code + grouped BASE_N
         const inputs = Array.from(document.querySelectorAll('[data-vcode]'))
@@ -312,7 +337,7 @@ function applyQuestionRulesVisibility() {
         const isGrouped = Object.values(groupedQuestionsMap).some(qs =>
             qs.some(q => q.v_code === vcode));
 
-        if (!applicable) {
+        if (state === 'na') {
             inputs.forEach(input => {
                 if (input.type === 'radio' || input.type === 'checkbox') {
                     input.checked = false;
@@ -325,9 +350,8 @@ function applyQuestionRulesVisibility() {
                 }
                 input.disabled = true;
                 input.dataset.na = '1';
-                const container = input.closest('.md\\:col-span-2') ||
-                    input.closest('.flex.flex-col') || input.parentElement;
-                if (container) container.classList.add('opacity-50');
+                const control = getControlWrapper(input);
+                if (control) control.classList.add('opacity-50');
             });
             if (isGrouped) {
                 Object.keys(sessionContext).forEach(k => {
@@ -338,18 +362,20 @@ function applyQuestionRulesVisibility() {
                 sessionContext[vcode] = 'N/A';
             }
         } else {
+            // 'applicable' → enabled; 'pending' → disabled + dimmed but NOT
+            // N/A-marked, so the progress bar doesn't count it until its
+            // dependency is resolved by answering the parent.
             inputs.forEach(input => {
-                input.disabled = false;
+                input.disabled = state === 'pending';
                 delete input.dataset.na;
                 if (input.type !== 'radio' && input.type !== 'checkbox' &&
-                    input.dataset.origPlaceholder !== undefined) {
+                    state === 'applicable' && input.dataset.origPlaceholder !== undefined) {
                     input.placeholder = input.dataset.origPlaceholder;
                 }
-                const container = input.closest('.md\\:col-span-2') ||
-                    input.closest('.flex.flex-col') || input.parentElement;
-                if (container) container.classList.remove('opacity-50');
+                const control = getControlWrapper(input);
+                if (control) control.classList.toggle('opacity-50', state === 'pending');
             });
-            // Drop the auto "N/A" state now that the field applies again
+            // Drop any auto "N/A" state (e.g. the parent was cleared again)
             Object.keys(sessionContext).forEach(k => {
                 const m = k.match(/^(.+?)_(\d+)$/);
                 if ((k === vcode || (m && m[1] === vcode)) &&
@@ -359,13 +385,12 @@ function applyQuestionRulesVisibility() {
             });
         }
 
-        // «غیرمرتبط» badge(s) — plain id for normal questions, one per
-        // rendered group entry (na-badge-BASE_N) for grouped ones.
+        // «غیرمرتبط» badge(s) — only when the dependency is explicitly false
         const badges = [];
         const plainBadge = document.getElementById(`na-badge-${vcode}`);
         if (plainBadge) badges.push(plainBadge);
         document.querySelectorAll(`[id^="na-badge-${vcode}_"]`).forEach(b => badges.push(b));
-        badges.forEach(b => { b.style.display = applicable ? 'none' : 'inline-block'; });
+        badges.forEach(b => { b.style.display = state === 'na' ? 'inline-block' : 'none'; });
     });
 }
 
@@ -517,6 +542,9 @@ function collectGroupedAnswers() {
             if (rawVcode && /_\d+$/.test(rawVcode)) {
                 // N/A-tagged (dependency not met) fields keep their "N/A" state
                 if (inp.dataset.na === '1') return;
+                // Pending (dependency not yet resolved) fields stay disabled
+                // and untouched — don't overwrite their state
+                if (inp.disabled) return;
                 if (inp.type === 'radio') {
                     if (inp.checked) sessionContext[rawVcode] = inp.value;
                 } else if (inp.type === 'checkbox') {
@@ -653,8 +681,36 @@ function renderForm(sections) {
             if (rules) questionRulesMap[q.v_code] = rules;
         });
 
-        // Now remove grouped questions from rendering (already counted above)
-        section.questions = (section.questions || []).filter(q => !q.group_pair);
+        // Place each group container at the sort_order position of its first
+        // question, so groups keep their place inside the section instead of
+        // always jumping to the top. Members of the group render inside the
+        // container as back-to-back rows in sort order.
+        const fullQuestions = section.questions || [];
+        const sectionGroups = Object.keys(groupedQuestionsMap)
+            .filter(gp => groupedQuestionsSections[gp] === section.section_key);
+        const groupFirstVcode = {};
+        sectionGroups.forEach(gp => {
+            const first = fullQuestions.find(q => q.group_pair === gp);
+            if (first) groupFirstVcode[gp] = first.v_code;
+        });
+        const renderedGroups = new Set();
+        let bodyHtml = fullQuestions.map(q => {
+            if (q.group_pair) {
+                if (groupFirstVcode[q.group_pair] === q.v_code) {
+                    renderedGroups.add(q.group_pair);
+                    return renderGroupContainer(q.group_pair);
+                }
+                return ''; // later members of the group render inside its rows
+            }
+            return renderQuestion(q);
+        }).join('');
+        // Safety net: a group whose first question wasn't matched still renders
+        bodyHtml += sectionGroups
+            .filter(gp => !renderedGroups.has(gp))
+            .map(gp => renderGroupContainer(gp)).join('');
+
+        // Non-grouped questions only (for anything else that uses the list)
+        section.questions = fullQuestions.filter(q => !q.group_pair);
 
         const sectHtml = `
             <section class="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-gray-100"
@@ -676,8 +732,7 @@ function renderForm(sections) {
                     </button>
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
-                    ${Object.keys(groupedQuestionsMap).filter(gp => groupedQuestionsSections[gp] === section.section_key).map(gp => renderGroupContainer(gp)).join('')}
-                    ${section.questions.map(q => renderQuestion(q)).join('')}
+                    ${bodyHtml}
                 </div>
             </section>
         `;
@@ -723,6 +778,9 @@ function updateProgressPanel() {
                 const vc = q.v_code + '_0';
                 if (countedVcodes.has(vc)) return;
                 countedVcodes.add(vc);
+                // Pending (dependency not yet resolved) grouped fields don't count
+                const input0 = document.querySelector(`[data-vcode="${vc}"]`);
+                if (input0 && input0.disabled && input0.dataset.na !== '1') return;
                 const val = sessionContext[vc];
                 if (val !== undefined && val !== null && val !== '') {
                     answered++;
@@ -1316,6 +1374,9 @@ function applyAiResults(data) {
             document.querySelectorAll(`[data-vcode="${vCode}"]`).forEach(input => {
                 input.dataset.na = '1';
                 if (input.type !== 'radio' && input.type !== 'checkbox') {
+                    if (input.dataset.origPlaceholder === undefined) {
+                        input.dataset.origPlaceholder = input.placeholder || '';
+                    }
                     input.value = '';
                     input.placeholder = 'غیرمرتبط';
                 }
