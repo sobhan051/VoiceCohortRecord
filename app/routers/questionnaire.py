@@ -283,6 +283,16 @@ async def start_submission(
     if form is None:
         return {"error": "هیچ فرمی تعریف نشده است"}
 
+    # Form sequence gate: earlier forms must be fully completed first.
+    from app.services.forms import locked_by_earlier_forms
+    blocked = locked_by_earlier_forms(db, user.user_id, form.form_id)
+    if blocked:
+        names = " و ".join(f.form_name for f in blocked)
+        return {
+            "error": f"برای شروع «{form.form_name}» ابتدا باید فرم «{names}» را کامل کنید",
+            "locked": True,
+        }
+
     # Progressive resume: reuse this patient's most recent submission for the
     # form regardless of status, so a returning patient continues where they
     # left off instead of starting an empty questionnaire. A completed

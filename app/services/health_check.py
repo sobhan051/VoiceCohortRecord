@@ -100,16 +100,15 @@ def _required_form_count(db):
 
 
 def _completed_form_ids(db, user_id: int):
-    rows = (
-        db.query(models.Submission.form_id)
-        .filter(
-            models.Submission.user_id == user_id,
-            models.Submission.status == "completed",
-        )
-        .distinct()
-        .all()
-    )
-    return {r[0] for r in rows}
+    """Form ids that are FULLY completed (every applicable required question
+    answered), regardless of submission status. A half-way submit doesn't count."""
+    from app.services.forms import is_form_fully_completed
+
+    return {
+        f.form_id
+        for f in db.query(models.Form).all()
+        if is_form_fully_completed(db, user_id, f.form_id)
+    }
 
 
 def get_health_eligibility(db, user_id: int):

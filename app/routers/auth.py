@@ -169,7 +169,10 @@ async def dashboard(user_id: str, db: Session = Depends(get_db)):
             .all()
         )
 
-        forms = {f.form_id: f for f in db.query(models.Form).all()}
+        forms = {
+            f.form_id: f
+            for f in db.query(models.Form).order_by(models.Form.sort_order, models.Form.form_id).all()
+        }
 
         completed_count = 0
         draft_count = 0
@@ -203,21 +206,32 @@ async def dashboard(user_id: str, db: Session = Depends(get_db)):
             else:
                 draft_count += 1
 
-        # Forms open to fill (forms the user hasn't started yet)
+        # Forms open to fill (forms the user hasn't started yet), in sequence
+        # order. Forms whose predecessors aren't fully completed are locked.
+        from app.services.forms import locked_by_earlier_forms, fully_completed_form_count
         open_forms = []
         for f_id, f in forms.items():
-            if not any(str(s.form_id) == str(f_id) for s in submissions):
-                open_forms.append({
-                    "form_id": str(f.form_id),
-                    "form_name": f.form_name,
-                    "category": f.category,
-                })
+            if any(str(s.form_id) == str(f_id) for s in submissions):
+                continue
+            blocked = locked_by_earlier_forms(db, uid, f_id)
+            open_forms.append({
+                "form_id": str(f.form_id),
+                "form_name": f.form_name,
+                "category": f.category,
+                "locked": bool(blocked),
+                "lock_reason": (
+                    "ابتدا باید فرم «" + " و ".join(b.form_name for b in blocked) + "» را کامل کنید"
+                    if blocked else None
+                ),
+            })
 
         data["dashboard_type"] = "user"
         data["stats"] = {
             "total_submissions": len(submissions),
             "completed_submissions": completed_count,
             "draft_submissions": draft_count,
+            "total_forms": len(forms),
+            "fully_completed_forms": fully_completed_form_count(db, uid),
         }
         data["submissions"] = submissions_list
         data["open_forms"] = open_forms

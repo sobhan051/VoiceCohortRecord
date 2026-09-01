@@ -24,6 +24,7 @@ class Form(Base):
     form_id = Column(Integer, primary_key=True, autoincrement=True)
     form_name = Column(String(255), nullable=False)
     category = Column(String(100))
+    sort_order = Column(Integer, nullable=False, default=0)  # sequence: users fill in this order
 
 
 class Section(Base):
@@ -50,6 +51,7 @@ class Question(Base):
     coding_options = Column(JSONB)
     unit = Column(String(50))
     manual_prompt = Column(Text)
+    is_required = Column(Boolean, default=True)  # column exists in DB; optional questions never block completion
     sort_order = Column(Integer, default=0)
     group_pair = Column(String(100), nullable=True)
     visibility_rules = Column(JSONB, nullable=True)

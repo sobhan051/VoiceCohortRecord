@@ -113,7 +113,15 @@ async function loadUserDashboard() {
                 <div class="mb-8" id="open-forms-block">
                     <h3 class="text-xl font-bold text-gray-800 mb-4">فرم‌های قابل تکمیل</h3>
                     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        ${openForms.map(f => `
+                        ${openForms.map(f => f.locked ? `
+                            <div class="bg-gray-50 rounded-2xl p-6 shadow-sm border border-gray-100 opacity-75">
+                                <div class="flex items-center justify-between mb-2">
+                                    <h4 class="font-bold text-gray-500 mb-0">${f.form_name}</h4>
+                                    <svg class="w-5 h-5 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
+                                </div>
+                                ${f.category ? `<p class="text-sm text-gray-400 mb-3">دسته: ${f.category}</p>` : ''}
+                                <p class="text-xs text-gray-400 leading-5">${f.lock_reason || 'ابتدا فرم‌های قبلی را کامل کنید'}</p>
+                            </div>` : `
                             <div class="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 hover:shadow-md transition">
                                 <h4 class="font-bold text-gray-800 mb-2">${f.form_name}</h4>
                                 ${f.category ? `<p class="text-sm text-gray-500 mb-4">دسته: ${f.category}</p>` : ''}
@@ -123,13 +131,14 @@ async function loadUserDashboard() {
                 </div>`;
         }
 
-        // Health check card — once per user when all 3 forms completed
+        // Health check card — strict "fully completed" counts from the server
+        // (a half-way submit or a merely-opened draft does not count).
         let healthHtml = '';
         try {
             const hcRes = await fetch(`/api/health-check/by-user/${currentUser.user_id}`);
             const hc = await hcRes.json();
-            const totalFormsNeeded = (data.open_forms.length + data.submissions.filter(s=>s.status==='completed').length) || 3;
-            const done = data.stats.completed_submissions;
+            const totalFormsNeeded = data.stats.total_forms || 0;
+            const done = data.stats.fully_completed_forms || 0;
             if (hc.exists) {
                 healthHtml = `<div class="mb-8 bg-gradient-to-br from-emerald-50 to-teal-50 border border-emerald-200 rounded-3xl p-6 shadow-sm">
                     <div class="flex items-start justify-between gap-4">
@@ -141,7 +150,7 @@ async function loadUserDashboard() {
             } else if (done >= totalFormsNeeded && totalFormsNeeded>0) {
                 healthHtml = `<div class="mb-8 bg-amber-50 border border-amber-200 rounded-3xl p-6 text-center"><p class="text-amber-800 font-bold">همه فرم‌ها تکمیل شد — چکاپ در حال آماده‌سازی...</p><p class="text-sm text-amber-600 mt-1">صفحه را بعد از چند لحظه تازه کنید</p></div>`;
             } else if (totalFormsNeeded>0) {
-                healthHtml = `<div class="mb-8 bg-white border border-gray-100 rounded-3xl p-6"><div class="flex items-center justify-between"><div><h3 class="font-bold text-gray-800">چکاپ سلامت</h3><p class="text-sm text-gray-500 mt-1">${done} از ${totalFormsNeeded} فرم تکمیل شده — پس از تکمیل همه، چکاپ هوشمند ایجاد می‌شود</p></div><div class="flex gap-1">${Array.from({length: totalFormsNeeded},(_,i)=>`<span class="w-3 h-3 rounded-full ${i<done?'bg-emerald-500':'bg-gray-200'}"></span>`).join('')}</div></div></div>`;
+                healthHtml = `<div class="mb-8 bg-white border border-gray-100 rounded-3xl p-6"><div class="flex items-center justify-between"><div><h3 class="font-bold text-gray-800">چکاپ سلامت</h3><p class="text-sm text-gray-500 mt-1">${done} از ${totalFormsNeeded} فرم کامل شده — پس از تکمیل کامل همه فرم‌ها، چکاپ هوشمند ایجاد می‌شود</p></div><div class="flex gap-1">${Array.from({length: totalFormsNeeded},(_,i)=>`<span class="w-3 h-3 rounded-full ${i<done?'bg-emerald-500':'bg-gray-200'}"></span>`).join('')}</div></div></div>`;
             }
         } catch(e) {}
         html += healthHtml;

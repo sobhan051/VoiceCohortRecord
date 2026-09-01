@@ -241,12 +241,13 @@ async def admin_delete_user(
 @router.get("/forms")
 async def admin_forms(db: Session = Depends(get_db)):
     """List all forms"""
-    forms = db.query(models.Form).order_by(models.Form.form_name).all()
+    forms = db.query(models.Form).order_by(models.Form.sort_order, models.Form.form_id).all()
     return [
         {
             "form_id": str(f.form_id),
             "form_name": f.form_name,
             "category": f.category,
+            "sort_order": f.sort_order,
         }
         for f in forms
     ]
@@ -259,6 +260,7 @@ async def admin_create_form(payload: dict, db: Session = Depends(get_db)):
         f = models.Form(
             form_name=payload.get("form_name"),
             category=payload.get("category"),
+            sort_order=payload.get("sort_order", 0),
         )
         db.add(f)
         db.commit()
@@ -281,6 +283,8 @@ async def admin_update_form(form_id: str, payload: dict, db: Session = Depends(g
         f.form_name = payload["form_name"]
     if "category" in payload:
         f.category = payload["category"]
+    if "sort_order" in payload:
+        f.sort_order = payload["sort_order"]
     db.commit()
     return {"success": True}
 
