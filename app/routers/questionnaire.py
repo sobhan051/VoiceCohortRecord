@@ -29,6 +29,14 @@ router = APIRouter()
 
 @router.get("/get-form-structure")
 async def get_form(form_id: str = None, db: Session = Depends(get_db)):
+    form_obj = None
+    if form_id:
+        try:
+            fid = int(form_id)
+            form_obj = db.query(models.Form).filter(models.Form.form_id == fid).first()
+        except ValueError:
+            pass
+
     query = db.query(models.Section)
     if form_id:
         try:
@@ -49,6 +57,13 @@ async def get_form(form_id: str = None, db: Session = Depends(get_db)):
             "depends_on_value": s.depends_on_value,
             "questions": qs
         })
+
+    if form_obj:
+        return {
+            "form_id": form_obj.form_id,
+            "form_name": form_obj.form_name,
+            "sections": result
+        }
     return result
 
 

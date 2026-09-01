@@ -80,6 +80,15 @@ async def admin_submissions(
         # Get user info
         user = db.query(models.User).filter(models.User.user_id == sub.user_id).first()
 
+        # Get form info
+        form_id = sub.form_id
+        form = None
+        if form_id:
+            try:
+                form = db.query(models.Form).filter(models.Form.form_id == int(form_id)).first()
+            except (ValueError, TypeError):
+                pass
+
         # Count responses
         response_count = db.query(models.Response).filter(
             models.Response.submission_id == sub.submission_id
@@ -87,6 +96,8 @@ async def admin_submissions(
 
         result.append({
             "submission_id": str(sub.submission_id),
+            "form_id": str(sub.form_id) if sub.form_id else None,
+            "form_name": form.form_name if form else "نامشخص",
             "user_name": f"{user.first_name or ''} {user.last_name or ''}" if user else "Unknown",
             "national_code": user.national_code if user else "N/A",
             "status": sub.status,
@@ -119,6 +130,14 @@ async def admin_submission_detail(
     # Get user
     user = db.query(models.User).filter(models.User.user_id == submission.user_id).first()
 
+    # Get form info
+    form = None
+    if submission.form_id:
+        try:
+            form = db.query(models.Form).filter(models.Form.form_id == int(submission.form_id)).first()
+        except (ValueError, TypeError):
+            pass
+
     # Get all responses
     responses = db.query(models.Response).filter(
         models.Response.submission_id == sub_id
@@ -144,6 +163,8 @@ async def admin_submission_detail(
 
     return {
         "submission_id": str(submission.submission_id),
+        "form_id": str(submission.form_id) if submission.form_id else None,
+        "form_name": form.form_name if form else "نامشخص",
         "status": submission.status,
         "created_at": submission.created_at.isoformat() if submission.created_at else None,
         "updated_at": submission.updated_at.isoformat() if submission.updated_at else None,

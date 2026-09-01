@@ -34,6 +34,9 @@
             border-bottom: 1px solid #f3f4f6;
             background: #fafbfc;
         }
+        #progress-panel .panel-header h3 {
+            font-size: 1.1rem;
+        }
         #progress-panel .panel-body {
             flex: 1;
             padding: 8px;
@@ -413,7 +416,7 @@
     <div id="progress-panel">
         <div class="panel-header">
             <div class="flex items-center justify-between">
-                <h3 class="text-sm font-bold text-gray-700">پیشرفت ثبت</h3>
+                <h3 id="progress-panel-title" class="text-sm font-bold text-gray-700" style="font-size: 1rem; color: #374151;">پیشرفت ثبت</h3>
                 <button onclick="toggleProgressPanel()" class="text-gray-400 hover:text-gray-600 transition lg:hidden">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>

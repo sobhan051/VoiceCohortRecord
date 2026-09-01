@@ -338,6 +338,7 @@ async function loadAdminSubmissions(container) {
                             <tr>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">کد ملی</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">نام کاربر</th>
+                                <th class="text-right p-4 text-sm font-bold text-gray-600">فرم</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">تاریخ</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">وضعیت</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">تعداد پاسخ</th>
@@ -347,13 +348,14 @@ async function loadAdminSubmissions(container) {
                         <tbody>`;
 
         if (submissions.length === 0) {
-            html += `<tr><td colspan="6" class="text-center p-8 text-gray-500">هیچ پرسشنامه‌ای یافت نشد</td></tr>`;
+            html += `<tr><td colspan="7" class="text-center p-8 text-gray-500">هیچ پرسشنامه‌ای یافت نشد</td></tr>`;
         } else {
             submissions.forEach(sub => {
                 html += `
                     <tr class="border-b hover:bg-gray-50 transition">
                         <td class="p-4 text-sm">${sub.national_code}</td>
                         <td class="p-4 text-sm">${sub.user_name || 'نامشخص'}</td>
+                        <td class="p-4 text-sm font-medium">${sub.form_name || 'نامشخص'}</td>
                         <td class="p-4 text-sm">${new Date(sub.created_at).toLocaleDateString('fa-IR')}</td>
                         <td class="p-4">
                             <span class="px-2 py-1 rounded-full text-xs ${sub.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}">
@@ -362,7 +364,7 @@ async function loadAdminSubmissions(container) {
                         </td>
                         <td class="p-4 text-sm">${sub.response_count}</td>
                         <td class="p-4 flex gap-2">
-                            <button onclick="viewAdminSubmission('${sub.submission_id}')" class="text-blue-600 hover:text-blue-800 text-sm">جزئیات</button>
+                            <button onclick="viewAdminSubmissionForm('${sub.form_id}', '${sub.submission_id}')" class="text-blue-600 hover:text-blue-800 text-sm">بررسی</button>
                             <button onclick="deleteAdminSubmission('${sub.submission_id}')" class="text-red-600 hover:text-red-800 text-sm">حذف</button>
                         </td>
                     </tr>`;
@@ -371,6 +373,10 @@ async function loadAdminSubmissions(container) {
         html += `</tbody></table></div></div>`;
         container.innerHTML = html;
     } catch (e) { container.innerHTML = '<div class="bg-red-50 text-red-600 p-4 rounded-xl">خطا در بارگذاری</div>'; }
+}
+
+async function viewAdminSubmissionForm(formId, submissionId) {
+    window.location.href = `/form?form_id=${formId}&submission_id=${submissionId}&admin_view=true`;
 }
 
 async function deleteAdminSubmission(submissionId) {
@@ -1012,6 +1018,7 @@ window.showAdminSection = showAdminSection;
 window.toggleAdminSidebar = toggleAdminSidebar;
 window.closeAdminSidebar = closeAdminSidebar;
 window.viewAdminSubmission = viewAdminSubmission;
+window.viewAdminSubmissionForm = viewAdminSubmissionForm;
 window.closeSubmissionModal = closeSubmissionModal;
 window.deleteAdminSubmission = deleteAdminSubmission;
 window.deleteAdminResponse = deleteAdminResponse;
