@@ -259,19 +259,46 @@ class PromptGenerator:
             cls._append_option_meanings(parts, q)
         return "".join(parts)
 
+    @staticmethod
+    def _anomaly_rules(scope):
+        """Shared strict flagging rules for both anomaly checks.
+
+        The checks are the LAST quality gate before answers become research
+        data: flag only record-corrupting errors, never health findings.
+        """
+        return (
+            "You are the final data-quality gate for a medical cohort study. "
+            f"Review {scope} ONLY for errors that would corrupt the dataset or "
+            "prove the recorded value is wrong.\n\n"
+            "FLAG ONLY these (data errors):\n"
+            "1. Medically or physically IMPOSSIBLE values (age 250, weight 1500 kg, "
+            "systolic BP 12, 25 hours per day, 30 daily meals).\n"
+            "2. HARD logical contradictions between answers (sex=male + pregnancy; "
+            "'never smoked' + 10 pack-years; no teeth + daily brushing of own teeth).\n"
+            "3. Obvious transcription/extraction corruption: the value contradicts "
+            "the verbatim transcript for the SAME field, or an obviously wrong unit "
+            "or scale (height 180 recorded as 1.8, weight 80 kg recorded as 80000).\n\n"
+            "NEVER FLAG these (they are VALID research data, not errors):\n"
+            "- Unhealthy but plausible lifestyle answers: smoking, alcohol, obesity, "
+            "no exercise, poor sleep, junk food. The study exists to collect these.\n"
+            "- Rare, unusual, or high values that are medically possible.\n"
+            "- Missing answers or skipped questions. Never mention missing data.\n"
+            "- Anything already \"N/A\" (question was not applicable).\n"
+            "- Health risks, disease probabilities, diet or lifestyle advice — you "
+            "are NOT doing a health assessment here, another process handles that.\n\n"
+            "WHEN IN DOUBT, DO NOT FLAG. A false warning wastes the field worker's "
+            "time; subtle issues are filtered statistically later. "
+            "Most questionnaires deserve ZERO warnings.\n"
+            "Return AT MOST 3 warnings — only the most important ones. "
+            "'critical' = record unusable (impossible value / hard contradiction); "
+            "'warning' = likely transcription error worth re-checking. "
+            "'message' must be a short explanation in Persian.\n\n"
+        )
+
     @classmethod
     def check_anomalies(cls, answers, questions_meta, confidence_reasons=None, transcript=None):
-        # Build base prompt
-        prompt = (
-            "You are a medical quality control assistant. "
-            "Review the following patient answers for clinical inconsistencies, "
-            "medically suspicious values, contradictions, or suspicious combinations. "
-            "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that are "
-            "clearly medically significant or potentially unsafe. "
-            "Do not nitpick minor or harmless details. "
-            "A value of \"N/A\" means the question was not applicable (its precondition "
-            "was not met); never flag it as missing, contradictory, or suspicious.\n\n"
-        )
+        # Build base prompt — dataset QC, not health assessment.
+        prompt = cls._anomaly_rules(scope="this section's answers")
 
         # Append field descriptions (options decoded so the model reasons about
         # the clinical meaning behind each code)
@@ -313,7 +340,7 @@ class PromptGenerator:
             "'v_code' (the code of the suspicious field), "
             "'message' (short explanation in Persian), and "
             "'severity' (either 'warning' or 'critical'). "
-            "If everything looks consistent, return an empty array.\n"
+            "If nothing is CLEARLY wrong, return an empty array [].\n"
             "Output ONLY a valid JSON array, no other text."
         )
 
@@ -324,7 +351,7 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=PromptGenerator._format_warning_schema(),
-                    thinking_config=ThinkingConfig(thinking_level="minimal"),
+                    thinking_config=ThinkingConfig(thinking_level="low"),
                 ),
             )
 
@@ -342,20 +369,9 @@ class PromptGenerator:
     @classmethod
     def check_final_anomalies(cls, all_answers, all_questions_meta, transcripts=None, confidence_reasons=None):
         """Cross-section quality pass over ALL answers of a submission at submit
-        time — catches contradictions between sections (e.g. section B says
-        'never smoked' while section C's meds include a COPD drug)."""
-        prompt = (
-            "You are a medical quality control assistant reviewing the COMPLETE "
-            "set of answers for one patient across ALL form sections. "
-            "Look for inconsistencies, contradictions, medically impossible or "
-            "suspicious values that may span across "
-            "different sections of the questionnaire. "
-            "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that "
-            "are clearly medically significant. "
-            "Do not nitpick minor wording or harmless details. "
-            "A value of \"N/A\" means the question was not applicable (its precondition "
-            "was not met); never flag it as missing, contradictory, or suspicious.\n\n"
-        )
+        time — catches record-corrupting errors spanning sections (e.g. section
+        B says 'never smoked' while section C reports 10 pack-years)."""
+        prompt = cls._anomaly_rules(scope="the COMPLETE set of answers for one patient across ALL form sections")
 
         # All answered fields with section context.
         for section, questions_meta in all_questions_meta.items():
@@ -398,7 +414,7 @@ class PromptGenerator:
             "'v_code' (the code of the suspicious field), "
             "'message' (short explanation in Persian), and "
             "'severity' (either 'warning' or 'critical'). "
-            "If everything looks consistent, return an empty array.\n"
+            "If nothing is CLEARLY wrong, return an empty array [].\n"
             "Output ONLY a valid JSON array, no other text."
         )
 
@@ -409,7 +425,7 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=PromptGenerator._format_warning_schema(),
-                    thinking_config=ThinkingConfig(thinking_level="minimal"),
+                    thinking_config=ThinkingConfig(thinking_level="low"),
                 ),
             )
 

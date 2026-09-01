@@ -1497,13 +1497,7 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
                 const anomalyData = await anomalyResp.json();
                 if (!anomalyData.error && anomalyData.warnings && anomalyData.warnings.length > 0) {
                     anomalyData.warnings.forEach(w => {
-                        if (!fieldWarnings[w.v_code]) {
-                            fieldWarnings[w.v_code] = [];
-                        }
-                        fieldWarnings[w.v_code].push({
-                            message: w.message,
-                            severity: w.severity || 'warning'
-                        });
+                        addFieldWarning(w.v_code, w.message, w.severity);
                     });
                     applyFieldWarnings();
                     updateSectionBadges();
@@ -1576,6 +1570,15 @@ function showToast(message) {
 }
 
 // ---------- Warning UI functions ----------
+// Add a warning for a field without stacking duplicates: re-recording a section
+// or re-running the final check must not repeat the same message.
+function addFieldWarning(vcode, message, severity) {
+    if (!vcode || !message) return;
+    const list = fieldWarnings[vcode] || (fieldWarnings[vcode] = []);
+    if (list.some(w => w.message === message)) return;
+    list.push({ message, severity: severity || 'warning' });
+}
+
 function applyFieldWarnings() {
     // Remove old warning styles from all inputs and their parent labels
     document.querySelectorAll('.field-warning, .field-critical').forEach(el => {
@@ -1797,11 +1800,7 @@ async function submitFinalForm() {
             const finalData = await finalResp.json();
             const warnings = (!finalData.error && finalData.warnings) ? finalData.warnings : [];
             warnings.forEach(w => {
-                if (!fieldWarnings[w.v_code]) fieldWarnings[w.v_code] = [];
-                fieldWarnings[w.v_code].push({
-                    message: w.message,
-                    severity: w.severity || 'warning'
-                });
+                addFieldWarning(w.v_code, w.message, w.severity);
             });
             finalSanityDone = true;
 
