@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.core.config import APP_BASE_URL
 from app.db.session import get_db
+from app.services.health_check import get_user_demographics
 from app.services.shamsi import calc_age, gregorian_to_shamsi_str
 
 router = APIRouter(prefix="/api")
@@ -23,6 +24,19 @@ def _parse_report(raw):
         return None
 
 
+def _user_sex_age(db, user):
+    """Sex/age from User columns if set, else derived from questionnaire A4/A5."""
+    if not user:
+        return None, None
+    sex = user.sex
+    age = calc_age(user.birth_date) if user.birth_date else None
+    if sex is None or age is None:
+        demo = get_user_demographics(db, user.user_id)
+        sex = sex or demo["sex"]
+        age = age or demo["age"]
+    return sex, age
+
+
 @router.get("/health-check/by-user/{user_id}")
 async def health_by_user(user_id: str, db: Session = Depends(get_db)):
     try:
@@ -33,14 +47,15 @@ async def health_by_user(user_id: str, db: Session = Depends(get_db)):
     if not hc:
         return {"exists": False}
     user = db.query(models.User).filter(models.User.user_id == uid).first()
+    sex, age = _user_sex_age(db, user)
     return {
         "exists": True,
         "check_id": str(hc.check_id),
         "summary": hc.summary,
         "report": _parse_report(hc.full_report),
         "created_at": hc.created_at.isoformat() if hc.created_at else None,
-        "user_age": calc_age(user.birth_date) if user and user.birth_date else None,
-        "user_sex": user.sex if user else None,
+        "user_age": age,
+        "user_sex": sex,
         "link": f"{APP_BASE_URL.rstrip('/')}/health-check/{hc.check_id}",
     }
 
@@ -55,6 +70,8 @@ async def health_by_id(check_id: str, db: Session = Depends(get_db)):
     if not hc:
         return {"error": "چکاپ یافت نشد"}
     user = db.query(models.User).filter(models.User.user_id == hc.user_id).first()
+    sex, age = _user_sex_age(db, user)
+    birth = gregorian_to_shamsi_str(user.birth_date) if user and user.birth_date else (get_user_demographics(db, hc.user_id)["birth_date_shamsi"] if user else None)
     return {
         "check_id": str(hc.check_id),
         "user_id": str(hc.user_id),
@@ -65,9 +82,9 @@ async def health_by_id(check_id: str, db: Session = Depends(get_db)):
         "user": {
             "first_name": user.first_name if user else None,
             "last_name": user.last_name if user else None,
-            "sex": user.sex if user else None,
-            "birth_date": gregorian_to_shamsi_str(user.birth_date) if user and user.birth_date else None,
-            "age": calc_age(user.birth_date) if user and user.birth_date else None,
+            "sex": sex,
+            "birth_date": birth,
+            "age": age,
         } if user else None,
     }
 

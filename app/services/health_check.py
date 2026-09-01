@@ -23,7 +23,6 @@ from app.core import config as app_config
 from app.db.session import SessionLocal
 
 from app.services.ai_engine import PromptGenerator
-from app.services.shamsi import calc_age, gregorian_to_shamsi_str
 
 # Optional email support — do not crash the health check if email module is missing.
 try:
@@ -133,6 +132,60 @@ def get_health_eligibility(db, user_id: int):
 
 def is_health_check_eligible(db, user_id: int) -> bool:
     return get_health_eligibility(db, user_id)["eligible"]
+
+
+# Questionnaire v_codes holding the demographics (form 1 / identity section).
+SEX_VCODE = "A4"      # Categorical {"1": "مرد", "2": "زن"}
+BIRTH_VCODE = "A5"    # Date, Shamsi (e.g. "1385" or "1385/05/14")
+
+
+def _latest_answer(db, user_id: int, v_code: str):
+    """Latest extracted_value for a v_code across the user's completed submissions."""
+    row = (
+        db.query(models.Response)
+        .join(models.Submission, models.Response.submission_id == models.Submission.submission_id)
+        .filter(
+            models.Submission.user_id == user_id,
+            models.Submission.status == "completed",
+            models.Response.v_code == v_code,
+        )
+        .order_by(
+            desc(models.Response.processed_at),
+            desc(models.Response.response_id),
+        )
+        .first()
+    )
+    return (row.extracted_value or "").strip() if row else ""
+
+
+def get_user_demographics(db, user_id: int):
+    """Derive sex/age/birth date from the questionnaire answers (A4/A5).
+
+    User table columns are no longer set at signup — demographics live in the
+    questionnaire, so read them from responses. Tolerant to text values.
+    """
+    sex = None
+    age = None
+    birth_date_shamsi = None
+
+    raw_sex = _latest_answer(db, user_id, SEX_VCODE)
+    if raw_sex in ("1", "male", "مرد"):
+        sex = "male"
+    elif raw_sex in ("2", "female", "زن"):
+        sex = "female"
+
+    raw_birth = _latest_answer(db, user_id, BIRTH_VCODE)
+    if raw_birth:
+        try:
+            from app.services.shamsi import parse_shamsi, calc_age, gregorian_to_shamsi_str
+            g = parse_shamsi(raw_birth)
+            if g:
+                age = calc_age(g)
+                birth_date_shamsi = gregorian_to_shamsi_str(g)
+        except Exception:
+            pass
+
+    return {"sex": sex, "age": age, "birth_date_shamsi": birth_date_shamsi}
 
 
 def _latest_completed_submission_ids(db, user_id: int):
@@ -297,21 +350,7 @@ def _build_health_payload(db, user_id: int):
         )
     )
 
-    qa_lines = []
-    transcripts = {}
-    transcript_times = {}
-
-    for item in items:
-        qa_lines.append(item["line"])
-
-        if item["transcript"]:
-            sk = item["section_key"]
-            ts = item["ts"]
-
-            # Keep only the newest transcript per section.
-            if sk not in transcript_times or ts > transcript_times[sk]:
-                transcript_times[sk] = ts
-                transcripts[sk] = item["transcript"][:3000]
+    qa_lines = [item["line"] for item in items]
 
     user = (
         db.query(models.User)
@@ -322,29 +361,16 @@ def _build_health_payload(db, user_id: int):
     if not user:
         return None
 
-    age = None
-    birth_date_shamsi = None
-
-    if user.birth_date:
-        try:
-            age = calc_age(user.birth_date)
-        except Exception:
-            age = None
-
-        try:
-            birth_date_shamsi = gregorian_to_shamsi_str(user.birth_date)
-        except Exception:
-            birth_date_shamsi = None
-
+    demo = get_user_demographics(db, user_id)
     uinfo = {
         "first_name": user.first_name or "",
         "last_name": user.last_name or "",
-        "sex": user.sex,
-        "age": age,
-        "birth_date_shamsi": birth_date_shamsi,
+        "sex": demo["sex"],
+        "age": demo["age"],
+        "birth_date_shamsi": demo["birth_date_shamsi"],
     }
 
-    return uinfo, qa_lines, transcripts
+    return uinfo, qa_lines
 
 
 def generate_user_health_check_background(user_id: int):
@@ -370,9 +396,9 @@ def generate_user_health_check_background(user_id: int):
         if not payload:
             return
 
-        uinfo, qa_lines, transcripts = payload
+        uinfo, qa_lines = payload
 
-        hc_data = PromptGenerator.generate_health_check(uinfo, qa_lines, transcripts)
+        hc_data = PromptGenerator.generate_health_check(uinfo, qa_lines)
 
         summary = (hc_data.get("summary") or "").strip()
         report = hc_data.get("report")

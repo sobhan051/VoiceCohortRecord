@@ -197,19 +197,52 @@ class PromptGenerator:
         }
 
     @staticmethod
-    def _append_option_meanings(desc_parts, q):
-        """Append the human meaning of each option code (e.g. 1=زن, 2=مرد)
-        so the checker reasons about clinical meaning, not opaque codes."""
+    def _parse_options(q):
+        """coding_options JSONB (dict or JSON string) -> dict, or None."""
         opts = q.get("coding_options")
         if not opts:
-            return
+            return None
         try:
             opts = json.loads(opts) if isinstance(opts, str) else opts
         except Exception:
+            return None
+        return opts if isinstance(opts, dict) and opts else None
+
+    @classmethod
+    def _decode_value(cls, value, opts):
+        """Decode the stored answer code(s) using coding_options.
+
+        "1"   -> "1 (مرد)"
+        "1,3" -> "1,3 (دیابت، بیماری قلبی)"
+        "1385" (no option match) -> None  — leave the value untouched.
+        Tolerates stray float strings ("1.0") in old rows.
+        """
+        if not opts:
+            return None
+        tokens = [t.strip() for t in str(value).split(",")]
+        labels = []
+        for t in tokens:
+            label = opts.get(t)
+            if label is None and t:
+                try:
+                    label = opts.get(str(int(float(t))))
+                except (ValueError, OverflowError):
+                    label = None
+            if label is None:
+                return None  # any unmatched token -> not a coded answer
+            labels.append(str(label))
+        sep = "، "
+        return f"{value} ({sep.join(labels)})"
+
+    @staticmethod
+    def _append_option_meanings(desc_parts, q):
+        """Append the human meaning of each option code (e.g. 1=زن, 2=مرد)
+        so the checker reasons about clinical meaning, not opaque codes."""
+        opts = PromptGenerator._parse_options(q)
+        if not opts:
             return
-        if isinstance(opts, dict) and opts:
-            meaning = ", ".join(f"{k}={v}" for k, v in opts.items())
-            desc_parts.append(f"options: {meaning}")
+        meaning = ", ".join(f"{k}={v}" for k, v in opts.items())
+        desc_parts.append(f" | options: {meaning}")
 
     @classmethod
     def _build_field_line(cls, q, value, include_options=True):
@@ -218,7 +251,10 @@ class PromptGenerator:
         ]
         if q.get("unit"):
             parts.append(f", unit {q['unit']}")
-        parts.append(f") → ANSWER: {value}")
+        # Decode the chosen code inline so the model never has to cross-reference
+        # the options list: ANSWER: 1 (مرد). Deterministic lookup, no inference.
+        shown = cls._decode_value(value, cls._parse_options(q)) or str(value)
+        parts.append(f") → ANSWER: {shown}")
         if include_options:
             cls._append_option_meanings(parts, q)
         return "".join(parts)
@@ -712,7 +748,7 @@ class PromptGenerator:
         }
 
     @staticmethod
-    def _build_health_prompt(user_info, qa_lines, transcripts=None):
+    def _build_health_prompt(user_info, qa_lines):
         name = f"{user_info.get('first_name') or ''} {user_info.get('last_name') or ''}".strip()
         sex_fa = {"male": "مرد", "female": "زن"}.get(user_info.get("sex"), user_info.get("sex") or "نامشخص")
         age = user_info.get("age")
@@ -728,16 +764,9 @@ class PromptGenerator:
             "",
             f"مشخصات بیمار: {demo}",
             "",
-            "پاسخ‌های پرسشنامه (کد سوال، متن سوال، پاسخ، معنی گزینه‌ها):",
+            "پاسخ‌های پرسشنامه (کد سوال، متن سوال، پاسخِ رمزگشایی‌شده، معنی گزینه‌ها). تاریخ‌ها شمسی هستند (مثلاً 1362 یعنی سال ۱۳۶۲ خورشیدی):",
         ]
         parts.extend(qa_lines)
-
-        if transcripts:
-            parts.append("")
-            parts.append("متن پیاده‌شده صداها (مرجع تأییدی):")
-            for k, v in transcripts.items():
-                if v:
-                    parts.append(f"[{k}]: {str(v)[:800]}")
 
         parts.append("""
 قواعد تحلیل:
@@ -766,8 +795,8 @@ class PromptGenerator:
         return "\n".join(parts)
 
     @classmethod
-    def generate_health_check(cls, user_info, qa_lines, transcripts=None):
-        prompt = cls._build_health_prompt(user_info, qa_lines, transcripts)
+    def generate_health_check(cls, user_info, qa_lines):
+        prompt = cls._build_health_prompt(user_info, qa_lines)
         schema = cls._health_schema()
 
         def _call(client, model):

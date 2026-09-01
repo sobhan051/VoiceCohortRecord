@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.db.session import get_db
-from app.services.shamsi import parse_shamsi, gregorian_to_shamsi_str, calc_age
+from app.services.shamsi import gregorian_to_shamsi_str, calc_age
 
 router = APIRouter(prefix="/api")
 
@@ -19,14 +19,13 @@ router = APIRouter(prefix="/api")
 @router.post("/signup")
 async def signup(payload: dict, db: Session = Depends(get_db)):
     """Create a new user account. Fields: first_name, last_name,
-    national_code (required), phone_number, email (optional), sex, birth_date (Shamsi)."""
+    national_code (required), phone_number, email (optional).
+    Sex/birth date come from the questionnaire (A4/A5), not signup."""
     first_name = (payload.get("first_name") or "").strip()
     last_name = (payload.get("last_name") or "").strip()
     national_code = (payload.get("national_code") or "").strip()
     phone_number = (payload.get("phone_number") or "").strip()
     email = (payload.get("email") or "").strip()
-    sex = (payload.get("sex") or "").strip().lower()
-    birth_raw = (payload.get("birth_date") or payload.get("birth_date_shamsi") or "").strip()
 
     if not national_code:
         return {"error": "کد ملی الزامی است"}
@@ -36,20 +35,6 @@ async def signup(payload: dict, db: Session = Depends(get_db)):
         return {"error": "شماره تماس باید با ۰۹ شروع شده و ۱۱ رقم باشد"}
     if email and not re.fullmatch(r"[^@]+@[^@]+\.[^@]+", email):
         return {"error": "ایمیل نامعتبر است"}
-    if sex and sex not in ("male", "female", "مرد", "زن", "1", "2"):
-        return {"error": "جنسیت نامعتبر است"}
-    # normalize sex
-    if sex in ("مرد", "1"):
-        sex = "male"
-    elif sex in ("زن", "2"):
-        sex = "female"
-    elif sex not in ("male", "female"):
-        sex = None
-    birth_date = None
-    if birth_raw:
-        birth_date = parse_shamsi(birth_raw)
-        if not birth_date:
-            return {"error": "تاریخ تولد شمسی نامعتبر است (نمونه: 1382/05/14 یا 1382)"}
 
     existing = db.query(models.User).filter(
         models.User.national_code == national_code
@@ -63,8 +48,6 @@ async def signup(payload: dict, db: Session = Depends(get_db)):
         national_code=national_code,
         phone_number=phone_number or None,
         email=email or None,
-        sex=sex,
-        birth_date=birth_date,
         role=1,
     )
     db.add(user)
