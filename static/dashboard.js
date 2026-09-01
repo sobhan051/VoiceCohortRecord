@@ -37,6 +37,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentUser = data.user;
         localStorage.setItem('vcr_user', JSON.stringify(currentUser));
         enterDashboard(currentUser);
+        showFlashToast();
     } catch (err) {
         console.warn('Failed to verify session:', err);
         // Server may be down — show error instead of redirect loop
@@ -44,6 +45,40 @@ document.addEventListener('DOMContentLoaded', async () => {
             '<div class="text-center"><p class="text-red-500 text-lg mb-2">خطا در اتصال به سرور</p><p class="text-gray-400 text-sm">لطفاً بعداً تلاش کنید</p><a href="/login" class="mt-4 inline-block bg-blue-600 text-white px-6 py-2 rounded-xl">بازگشت به صفحه ورود</a></div>';
     }
 });
+
+// ---------- Flash toast (message handed over from the form page) ----------
+// The questionnaire stores its "submission saved" message in sessionStorage
+// before redirecting here; show it as a bottom-right toast instead of an alert.
+function showFlashToast() {
+    let msg = null;
+    try { msg = sessionStorage.getItem('vcr_flash'); } catch (e) { return; }
+    if (!msg) return;
+    try { sessionStorage.removeItem('vcr_flash'); } catch (e) { /* ignore */ }
+    const toast = document.createElement('div');
+    toast.style.cssText = [
+        'position:fixed', 'bottom:1.5rem', 'right:1.5rem', 'z-index:9999',
+        'max-width:22rem', 'background:#ffffff', 'color:#065f46',
+        'border:1px solid #a7f3d0', 'border-right:4px solid #10b981',
+        'box-shadow:0 10px 25px rgba(0,0,0,.12)', 'border-radius:1rem',
+        'padding:0.9rem 1.1rem', 'font-size:0.875rem', 'line-height:1.7',
+        'white-space:pre-line', 'cursor:pointer',
+        'opacity:0', 'transform:translateY(8px)',
+        'transition:opacity .25s ease, transform .25s ease'
+    ].join(';');
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+    requestAnimationFrame(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateY(0)';
+    });
+    const dismiss = () => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(8px)';
+        setTimeout(() => toast.remove(), 300);
+    };
+    toast.addEventListener('click', dismiss);
+    setTimeout(dismiss, 6000);
+}
 
 function enterDashboard(user) {
     document.getElementById('session-loading').classList.add('hidden');
@@ -194,7 +229,10 @@ async function loadUserDashboard() {
         } else {
             // Same behavior as admin panel: navigate with ?form_id= whenever possible,
             // never send the user to a form-less URL when a concrete form exists.
-            const startFormLink = openForms.length === 1
+            // A locked form must never be linked directly — starting it fails
+            // on the server (sequence gate) and leaves the form sessionless.
+            // Fall through to the forms grid, where the lock card shows why.
+            const startFormLink = openForms.length === 1 && !openForms[0].locked
                 ? `<a href="/form?form_id=${openForms[0].form_id}" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl transition">شروع پرسشنامه جدید</a>`
                 : openForms.length > 0
                     ? `<a href="#open-forms-block" onclick="event.preventDefault(); document.getElementById('open-forms-block').scrollIntoView({behavior:'smooth'})" class="inline-block bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl transition">انتخاب فرم</a>`
@@ -277,7 +315,6 @@ async function loadAdminDashboard(container) {
                                 ${f.category ? `<p class="text-xs text-gray-500 mt-1">${f.category}</p>` : ''}
                             </div>
                         </div>
-                        <div class="text-blue-600 text-sm font-medium">باز کردن فرم →</div>
                     </a>`).join('')}
             </div>`}`;
     } catch (e) { container.innerHTML = '<div class="bg-red-50 text-red-600 p-4 rounded-xl">خطا در بارگذاری اطلاعات</div>'; }

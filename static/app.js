@@ -140,6 +140,15 @@ async function autoStartFromSession() {
         if (data.error) {
             errEl.textContent = data.error;
             errEl.classList.remove('hidden');
+            // Make the failure impossible to miss (e.g. form locked by the
+            // sequence gate) and prevent the misleading "session not started"
+            // alert on submit: toast + disabled final-submit button.
+            showToast(data.error);
+            const submitBtn = document.getElementById('panel-submit-btn');
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.title = data.error;
+            }
             return;
         }
 
@@ -1556,15 +1565,18 @@ async function submitFinalForm() {
         if (data.health_check && data.health_check.check_id) {
             msg += data.health_check.existing ? "\nچکاپ شما قبلاً ایجاد شده است." : "\n✓ چکاپ سلامت شما ایجاد شد — در داشبورد قابل مشاهده است.";
         }
-        alert(msg);
+        // No blocking alert — hand the message to the dashboard, which shows it
+        // as a toast in the bottom-right corner after the redirect.
+        try { sessionStorage.setItem('vcr_flash', msg); } catch (e) { /* ignore */ }
         if (data.health_check && data.health_check.check_id && !data.health_check.existing) {
             window.location.href = `/health-check/${data.health_check.check_id}`;
             return;
         }
-        // Lock further edits for this patient; require an explicit new start
+        // Submission complete & responses saved in DB — return to the dashboard
+        // (the health-check branch above keeps its own redirect target)
         currentSubmissionId = null;
         finalSanityDone = false;
-        document.getElementById('status-badge').textContent = 'ثبت شد';
+        window.location.href = '/dashboard';
     } catch (err) {
         console.error('complete-submission failed:', err);
         alert('ارتباط با سرور با مشکل مواجه شد.');
