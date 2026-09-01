@@ -7,3 +7,5 @@ python-dotenv
 python-multipart
 requests
 jdatetime
+pandas
+openpyxl

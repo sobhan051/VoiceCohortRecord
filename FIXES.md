@@ -13,9 +13,10 @@
 - [x] delete "lab", others sections from db
 - [x] go to dashboard after submission 
 - [x] ask for age instead of birthdate
+- [X] visibility_check between forms
+- [X] make export section in admin dashboard
 
 - [ ] test vitamin pills tracker
 - [ ] fix Sanity check is doing Advice? we need it just to check to make sure the user said the right answer. 
 - [ ] get the fonts and other stuff for UI offline
-- [ ] visibility_check between forms
 - [ ] هیچکدام option should disable the other options (small bug)

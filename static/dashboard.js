@@ -288,6 +288,7 @@ function showAdminSection(section) {
         case 'users': loadAdminUsers(container); break;
         case 'forms': loadAdminForms(container); break;
         case 'settings': loadAdminSettings(container); break;
+        case 'export': loadAdminExport(container); break;
     }
     if (window.innerWidth < 1024) closeAdminSidebar();
 }
@@ -1012,6 +1013,235 @@ function saveAdminSettings() {
     alert('تنظیمات با موفقیت ذخیره شد');
 }
 
+// ---------- Export (DB → SQL / CSV / XLSX) ----------
+let exportTablesCache = [];
+
+async function loadAdminExport(container) {
+    container.innerHTML = '<div class="text-center py-20">در حال بارگذاری...</div>';
+    try {
+        const res = await fetch('/api/admin/export/tables');
+        const tables = await res.json();
+        exportTablesCache = tables;
+        renderExportView(container, tables);
+    } catch (e) {
+        container.innerHTML = '<div class="bg-red-50 text-red-600 p-4 rounded-xl">خطا در بارگذاری</div>';
+    }
+}
+
+function renderExportView(container, tables) {
+    container.innerHTML = `
+        <div class="mb-6">
+            <h2 class="text-3xl font-bold text-gray-800">خروجی / پشتیبان‌گیری</h2>
+            <p class="text-gray-500 mt-2">دریافت خروجی از پایگاه داده در قالب‌های SQL، CSV یا Excel</p>
+        </div>
+
+        <div class="bg-white rounded-2xl shadow-sm p-6 mb-6">
+            <div class="flex flex-wrap items-center gap-3">
+                <button onclick="exportFullPgdump()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-sm font-bold inline-flex items-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10a2 2 0 002 2h12a2 2 0 002-2V9a2 2 0 00-2-2h-5l-2-2H6a2 2 0 00-2 2z"/></svg>
+                    پشتیبان کامل (pg_dump)
+                </button>
+                <span class="text-xs text-gray-500">پشتیبان کامل PostgreSQL از تمام جداول (با pg_dump، در غیر این صورت بازسازی SQL).</span>
+            </div>
+        </div>
+
+        <div class="bg-white rounded-2xl shadow-sm p-6 mb-6">
+            <h3 class="font-bold text-gray-800 mb-3">خروجی سفارشی</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block text-sm font-bold mb-2">قالب خروجی</label>
+                    <select id="exp-format" class="w-full border rounded-xl p-2">
+                        <option value="sql">SQL (INSERT statements)</option>
+                        <option value="csv">CSV</option>
+                        <option value="xlsx">Excel (XLSX)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-bold mb-2">نام فایل (اختیاری)</label>
+                    <input id="exp-filename" type="text" class="w-full border rounded-xl p-2" placeholder="مثلاً: vcr_users_only">
+                </div>
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-bold mb-2">انتخاب جدول‌ها</label>
+                <div class="flex flex-wrap gap-2 mb-2">
+                    <button type="button" onclick="expSelectAll()" class="text-xs bg-blue-50 text-blue-700 px-3 py-1 rounded-lg">انتخاب همه</button>
+                    <button type="button" onclick="expSelectNone()" class="text-xs bg-gray-100 text-gray-700 px-3 py-1 rounded-lg">حذف همه</button>
+                </div>
+                <div id="exp-tables" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 max-h-60 overflow-y-auto p-3 border rounded-xl bg-gray-50">
+                    ${tables.map(t => `
+                        <label class="flex items-center gap-2 px-2 py-1 rounded-lg hover:bg-white cursor-pointer">
+                            <input type="checkbox" value="${t.name}" data-table="${t.name}" class="exp-table-cb w-4 h-4" onchange="expRebuildColumns()">
+                            <span class="text-sm">${t.name}</span>
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+
+            <div id="exp-columns-area" class="mb-4 hidden">
+                <label class="block text-sm font-bold mb-2">انتخاب ستون‌ها (پیش‌فرض: همه)</label>
+                <div id="exp-columns-list" class="space-y-2"></div>
+            </div>
+
+            <div id="exp-join-area" class="mb-4 hidden">
+                <label class="block text-sm font-bold mb-2">ادغام جدول‌ها (Join) — اختیاری</label>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                    <div>
+                        <label class="block text-xs text-gray-500 mb-1">کلید مشترک (اختیاری)</label>
+                        <input id="exp-join-key" type="text" class="w-full border rounded-xl p-2" placeholder="مثلاً: user_id">
+                    </div>
+                </div>
+                <p class="text-xs text-gray-500 mt-1">اگر بیش از یک جدول انتخاب شده و کلید مشترک خالی باشد، ضرب دکارتی استفاده می‌شود.</p>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-3">
+                <button onclick="runExport()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-xl text-sm font-bold inline-flex items-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                    دانلود خروجی
+                </button>
+                <span id="exp-status" class="text-xs text-gray-500"></span>
+            </div>
+        </div>
+    `;
+}
+
+function expSelectAll() {
+    document.querySelectorAll('.exp-table-cb').forEach(cb => cb.checked = true);
+    expRebuildColumns();
+}
+function expSelectNone() {
+    document.querySelectorAll('.exp-table-cb').forEach(cb => cb.checked = false);
+    expRebuildColumns();
+}
+
+function expRebuildColumns() {
+    const checked = Array.from(document.querySelectorAll('.exp-table-cb:checked')).map(cb => cb.value);
+    const colsArea = document.getElementById('exp-columns-area');
+    const colsList = document.getElementById('exp-columns-list');
+    const joinArea = document.getElementById('exp-join-area');
+
+    if (checked.length === 0) {
+        colsArea.classList.add('hidden');
+        joinArea.classList.add('hidden');
+        return;
+    }
+    colsArea.classList.remove('hidden');
+    joinArea.classList.toggle('hidden', checked.length < 2);
+
+    colsList.innerHTML = checked.map(name => {
+        const t = exportTablesCache.find(x => x.name === name);
+        if (!t) return '';
+        return `
+            <div class="border rounded-xl p-3 bg-gray-50">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="font-bold text-sm">${t.name}</span>
+                    <div class="flex gap-2">
+                        <button type="button" onclick="expToggleCols('${name}', true)" class="text-xs text-blue-600 hover:underline">همه</button>
+                        <button type="button" onclick="expToggleCols('${name}', false)" class="text-xs text-gray-600 hover:underline">هیچ</button>
+                    </div>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-1">
+                    ${t.columns.map(c => `
+                        <label class="flex items-center gap-2 text-xs">
+                            <input type="checkbox" data-table="${name}" value="${c.name}" class="exp-col-cb w-3.5 h-3.5" checked>
+                            <span title="${c.type}">${c.name}</span>
+                        </label>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function expToggleCols(tableName, on) {
+    document.querySelectorAll(`.exp-col-cb[data-table="${tableName}"]`).forEach(cb => cb.checked = on);
+}
+
+function expGatherPayload() {
+    const format = document.getElementById('exp-format').value;
+    const filename = document.getElementById('exp-filename').value.trim() || null;
+    const tables = Array.from(document.querySelectorAll('.exp-table-cb:checked')).map(cb => cb.value);
+    if (tables.length === 0) return { error: 'حداقل یک جدول انتخاب کنید' };
+
+    const columns = {};
+    tables.forEach(name => {
+        const cols = Array.from(document.querySelectorAll(`.exp-col-cb[data-table="${name}"]:checked`))
+            .map(cb => cb.value);
+        if (cols.length > 0) columns[name] = cols;
+    });
+    const join_key = document.getElementById('exp-join-key')?.value?.trim() || null;
+
+    return { format, filename, payload: { tables, columns, join_key } };
+}
+
+async function runExport() {
+    const { format, filename, payload, error } = expGatherPayload();
+    if (error) { alert(error); return; }
+    const status = document.getElementById('exp-status');
+    status.textContent = 'در حال آماده‌سازی فایل...';
+    try {
+        const res = await fetch(`/api/admin/export/${format}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...payload, filename: filename ? `${filename}.${format === 'xlsx' ? 'xlsx' : format === 'csv' ? 'csv' : 'sql'}` : null }),
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: 'خطای نامشخص' }));
+            status.textContent = '';
+            alert(`خطا: ${err.error || res.statusText}`);
+            return;
+        }
+        const blob = await res.blob();
+        const disposition = res.headers.get('content-disposition') || '';
+        const m = disposition.match(/filename="?([^"]+)"?/);
+        const downloadName = m ? m[1] : (filename || `vcr_export.${format}`);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        status.textContent = 'دانلود شروع شد ✓';
+        setTimeout(() => { status.textContent = ''; }, 4000);
+    } catch (e) {
+        status.textContent = '';
+        alert('خطا در دریافت خروجی: ' + e.message);
+    }
+}
+
+async function exportFullPgdump() {
+    if (!confirm('پشتیبان کامل دیتابیس دریافت شود؟')) return;
+    const status = document.getElementById('exp-status');
+    status.textContent = 'در حال ساخت پشتیبان...';
+    try {
+        const res = await fetch('/api/admin/export/pgdump');
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ error: 'خطای نامشخص' }));
+            status.textContent = '';
+            alert(`خطا: ${err.error || res.statusText}`);
+            return;
+        }
+        const blob = await res.blob();
+        const disposition = res.headers.get('content-disposition') || '';
+        const m = disposition.match(/filename="?([^"]+)"?/);
+        const downloadName = m ? m[1] : `vcr_pgdump_${Date.now()}.sql`;
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = downloadName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        status.textContent = 'دانلود شروع شد ✓';
+        setTimeout(() => { status.textContent = ''; }, 4000);
+    } catch (e) {
+        status.textContent = '';
+        alert('خطا: ' + e.message);
+    }
+}
+
 // ---------- Expose to global scope ----------
 window.handleLogout = handleLogout;
 window.showAdminSection = showAdminSection;
@@ -1041,3 +1271,10 @@ window.editQuestion = editQuestion;
 window.closeQuestionModal = closeQuestionModal;
 window.deleteQuestion = deleteQuestion;
 window.saveAdminSettings = saveAdminSettings;
+window.loadAdminExport = loadAdminExport;
+window.expSelectAll = expSelectAll;
+window.expSelectNone = expSelectNone;
+window.expRebuildColumns = expRebuildColumns;
+window.expToggleCols = expToggleCols;
+window.runExport = runExport;
+window.exportFullPgdump = exportFullPgdump;
