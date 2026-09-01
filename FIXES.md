@@ -15,9 +15,13 @@ UPDATE public.forms SET sort_order = 3 WHERE category = 'medical';
 - [x] health auto check UI fixed(untested)(only need to do is_required questions -> make the all required??)
 - [ ] test vitamin pills tracker
 - [ ] convert income source into one multi select q
-- [ ] Make med history as one multi select q +  هیچ کدام option 
+- [x] Make med history as one multi select q +  هیچ کدام option 
 - [ ] Add q "do you use any meds/pills" At top with visibility and conditional
 - [ ] delete "lab", others sections from db
 - [ ] fix Sanity check is doing Advice? we need it just to check to make sure the 
 user said the right answer. 
-- [ ] 
+- [ ] go to dashboard after submission 
+- [ ] get the fonts and other stuff for UI offline
+- [x] ask for age instead of birthdate
+- [ ] visibility_check between forms
+- [ ] هیچکدام option should disable the other options (small bug)
