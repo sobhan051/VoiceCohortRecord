@@ -81,11 +81,10 @@ async def admin_submissions(
         user = db.query(models.User).filter(models.User.user_id == sub.user_id).first()
 
         # Get form info
-        form_id = sub.form_id
         form = None
-        if form_id:
+        if sub.form_id:
             try:
-                form = db.query(models.Form).filter(models.Form.form_id == int(form_id)).first()
+                form = db.query(models.Form).filter(models.Form.form_id == int(sub.form_id)).first()
             except (ValueError, TypeError):
                 pass
 
@@ -161,6 +160,27 @@ async def admin_submission_detail(
             "processed_at": resp.processed_at.isoformat() if resp.processed_at else None
         })
 
+    # Cross-form answers: pull every response the user has saved across ALL
+    # of their submissions so visibility rules that depend on a parent living
+    # in a different form (e.g. A4 gender in form 1 -> deactive_options on K1
+    # in form 2) still evaluate correctly in admin view.
+    cross_form_answers = {}
+    if user:
+        other_responses = db.query(models.Response).join(
+            models.Submission,
+            models.Response.submission_id == models.Submission.submission_id,
+        ).filter(
+            models.Submission.user_id == user.user_id,
+        ).order_by(
+            models.Response.processed_at.asc(),
+            models.Response.response_id.asc(),
+        ).all()
+        for r in other_responses:
+            if r.extracted_value is None or r.extracted_value == "":
+                continue
+            key = f"{r.v_code}_{r.group_index}" if r.group_index is not None else r.v_code
+            cross_form_answers[key] = r.extracted_value
+
     return {
         "submission_id": str(submission.submission_id),
         "form_id": str(submission.form_id) if submission.form_id else None,
@@ -175,7 +195,8 @@ async def admin_submission_detail(
             "national_code": user.national_code if user else None,
             "phone_number": user.phone_number if user else None
         } if user else None,
-        "responses": responses_data
+        "responses": responses_data,
+        "cross_form_answers": cross_form_answers,
     }
 
 

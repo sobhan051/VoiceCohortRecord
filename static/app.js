@@ -110,8 +110,23 @@ async function loadAdminSubmissionData(submissionId) {
             });
 
             applyAiResults(answers);
-            updateQuestionVisibility();
         }
+
+        // Cross-form answers: parent fields that live in another form the
+        // user already submitted. Required for visibility_rules /
+        // deactive_options on the current form to evaluate against parents
+        // recorded elsewhere (e.g. A4 gender in form 1 -> disable option 19
+        // of K1 in form 2).
+        if (data.cross_form_answers) {
+            Object.entries(data.cross_form_answers).forEach(([vcode, val]) => {
+                if (val === null || val === undefined || val === '') return;
+                if (sessionContext[vcode] === undefined) {
+                    sessionContext[vcode] = String(val);
+                }
+            });
+        }
+
+        updateQuestionVisibility();
 
         document.getElementById('status-badge').textContent = data.status === 'completed' ? 'تکمیل شده' : 'پیش‌نویس';
 
@@ -427,6 +442,8 @@ function updateQuestionVisibility() {
 }
 
 // ---------- Question-Level Dependency Rules (visibility_rules JSONB) ----------
+// Each rule may carry `deactive_options`: when the rule's parent answer
+// matches, the listed option codes of the current question are disabled.
 function normalizeRules(raw) {
     if (!raw) return null;
     let rules = raw;
@@ -436,7 +453,13 @@ function normalizeRules(raw) {
     if (!rules || typeof rules !== 'object' || !Array.isArray(rules.rules)) return null;
     const clean = rules.rules
         .filter(r => r && r.v_code && Array.isArray(r.values) && r.values.length > 0)
-        .map(r => ({ v_code: String(r.v_code), values: r.values.map(String) }));
+        .map(r => {
+            const rule = { v_code: String(r.v_code), values: r.values.map(String) };
+            if (Array.isArray(r.deactive_options) && r.deactive_options.length > 0) {
+                rule.deactive_options = r.deactive_options.map(String);
+            }
+            return rule;
+        });
     if (clean.length === 0) return null;
     return { logic: rules.logic === 'any' ? 'any' : 'all', rules: clean };
 }
@@ -488,6 +511,46 @@ function getQuestionRuleState(vcode) {
     // logic "all"
     if (results.includes('pending')) return 'pending';
     return results.every(r => r === 'pass') ? 'applicable' : 'na';
+}
+
+// Returns the list of option codes that should be deactivated on the
+// question owning these rules. Each rule may carry a `deactive_options`
+// list — when that rule's parent answer matches, those option codes
+// become unavailable (greyed out + uncheckable) on the current question.
+function getDeactiveOptionsFor(vcode) {
+    const rules = questionRulesMap[vcode];
+    if (!rules) return [];
+    const out = [];
+    const seen = new Set();
+    rules.rules.forEach(rule => {
+        if (!Array.isArray(rule.deactive_options) || rule.deactive_options.length === 0) return;
+        const state = evaluateRuleState(rule);
+        if (state !== 'pass') return;
+        rule.deactive_options.forEach(opt => {
+            const k = String(opt);
+            if (!seen.has(k)) {
+                seen.add(k);
+                out.push(k);
+            }
+        });
+    });
+    return out;
+}
+
+// Evaluate a single rule's parent match state without computing the full
+// question tri-state ('pass' | 'fail' | 'pending').
+function evaluateRuleState(rule) {
+    let parentValue = getEffectiveAnswer(rule.v_code);
+    if (parentValue === null || parentValue === undefined) return 'pending';
+    parentValue = String(parentValue).trim();
+    if (parentValue === '') return 'pending';
+    if (parentValue.toUpperCase() === 'N/A') return 'fail';
+    const allowed = rule.values.map(String);
+    if (parentValue.includes(',')) {
+        const selected = parentValue.split(',').map(v => v.trim()).filter(Boolean);
+        return selected.some(v => allowed.includes(v)) ? 'pass' : 'fail';
+    }
+    return allowed.includes(parentValue) ? 'pass' : 'fail';
 }
 
 // Wrapper around JUST the control (options row / input box) — dimming for
@@ -571,6 +634,61 @@ function applyQuestionRulesVisibility() {
         if (plainBadge) badges.push(plainBadge);
         document.querySelectorAll(`[id^="na-badge-${vcode}_"]`).forEach(b => badges.push(b));
         badges.forEach(b => { b.style.display = state === 'na' ? 'inline-block' : 'none'; });
+
+        // Per-rule deactive_options: grey out + uncheck option codes whose
+        // parent rule currently passes. Independent of the question's overall
+        // tri-state, so it works for both applicable and na states.
+        applyDeactiveOptionsFor(vcode);
+    });
+}
+
+// Per-question option-level deactivation. Scoped to radio / checkbox inputs
+// (the only response types that have option codes). When a rule lists
+// deactive_options and the parent answer matches, the matching option cards
+// become unselectable, the input is unchecked, and the label is dimmed.
+function applyDeactiveOptionsFor(vcode) {
+    const deactive = getDeactiveOptionsFor(vcode);
+    if (deactive.length === 0) {
+        // Re-enable any previously-deactivated option for this question
+        const prev = document.querySelectorAll('input[type="radio"][data-vcode="' + vcode + '"][data-deactive="1"], input[type="checkbox"][data-vcode="' + vcode + '"][data-deactive="1"]');
+        prev.forEach(inp => {
+            inp.disabled = !!inp.dataset.na;
+            delete inp.dataset.deactive;
+            const label = inp.closest('label');
+            if (label) {
+                label.classList.remove('opacity-40', 'pointer-events-none', 'cursor-not-allowed');
+                label.title = '';
+            }
+        });
+        return;
+    }
+    const deactiveSet = new Set(deactive.map(String));
+    const selector = [
+        'input[type="radio"][data-vcode="' + vcode + '"]',
+        'input[type="checkbox"][data-vcode="' + vcode + '"]',
+    ].join(',');
+    const inputs = Array.from(document.querySelectorAll(selector));
+    inputs.forEach(inp => {
+        const label = inp.closest('label');
+        if (deactiveSet.has(String(inp.value))) {
+            if (inp.checked) inp.checked = false;
+            inp.disabled = true;
+            inp.dataset.deactive = '1';
+            if (label) {
+                label.classList.add('opacity-40', 'pointer-events-none', 'cursor-not-allowed');
+                label.title = 'این گزینه توسط قوانین فرم غیرفعال شده است';
+            }
+        } else {
+            // Only re-enable if the option is NOT also N/A-tagged by visibility
+            if (inp.dataset.deactive === '1') {
+                inp.disabled = !!inp.dataset.na;
+                delete inp.dataset.deactive;
+                if (label) {
+                    label.classList.remove('opacity-40', 'pointer-events-none', 'cursor-not-allowed');
+                    label.title = '';
+                }
+            }
+        }
     });
 }
 
