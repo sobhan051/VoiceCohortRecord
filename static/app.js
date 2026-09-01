@@ -22,27 +22,213 @@ let currentSubmissionId = null;   // set once a patient/submission is started
 let questionRulesMap = {};        // { v_code: {logic, rules} } – question dependency rules (visibility_rules)
 let lastAudioBySection = {};      // { section_key: Blob } – kept so a failed send can be retried without re-recording
 let sectionProgressData = {};     // { section_key: { name_fa, total, answered } } – for the progress panel
+let adminViewMode = false;
+let adminSubmissionId = null;
+let adminFormName = '';
 
 document.addEventListener('DOMContentLoaded', async () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    adminViewMode = urlParams.get('admin_view') === 'true';
+    adminSubmissionId = urlParams.get('submission_id');
+    const selectedFormId = urlParams.get('form_id') || localStorage.getItem('selected_form_id') || '';
+
     try {
-        // Pass form_id — prefer URL param, fall back to localStorage
-        const urlParams = new URLSearchParams(window.location.search);
-        const selectedFormId = urlParams.get('form_id') || localStorage.getItem('selected_form_id') || '';
-        // Persist to localStorage so start-submission can use it too
-        if (selectedFormId) localStorage.setItem('selected_form_id', selectedFormId);
         const url = selectedFormId ? `/get-form-structure?form_id=${selectedFormId}` : '/get-form-structure';
         const res = await fetch(url);
-        const sections = await res.json();
-        renderForm(sections);
+        const data = await res.json();
+
+        if (data && data.form_name && data.sections) {
+            adminFormName = data.form_name;
+            updateProgressPanelTitle(adminFormName);
+            renderForm(data.sections);
+        } else {
+            renderForm(Array.isArray(data) ? data : []);
+        }
         updateQuestionVisibility();
     } catch (err) {
         console.error("Failed to load form structure:", err);
         document.getElementById('form-container').innerHTML =
             `<div class="bg-red-50 text-red-600 p-4 rounded-xl border border-red-200">خطا در دریافت اطلاعات از سرور. لطفا اتصال دیتابیس را بررسی کنید.</div>`;
     }
-    // Auto-start from dashboard session
-    autoStartFromSession();
+
+    if (adminViewMode && adminSubmissionId) {
+        await loadAdminSubmissionData(adminSubmissionId);
+    } else {
+        autoStartFromSession();
+    }
 });
+
+function updateProgressPanelTitle(formName) {
+    const titleEl = document.getElementById('progress-panel-title');
+    if (titleEl) {
+        titleEl.textContent = formName;
+        titleEl.style.fontSize = '1.1rem';
+        titleEl.style.fontWeight = '700';
+        titleEl.style.color = '#1e40af';
+    }
+}
+
+async function loadAdminSubmissionData(submissionId) {
+    try {
+        const res = await fetch(`/api/admin/submission/${submissionId}`);
+        const data = await res.json();
+        if (data.error) {
+            showToast('خطا در بارگذاری اطلاعات: ' + data.error);
+            return;
+        }
+
+        currentSubmissionId = submissionId;
+
+        document.getElementById('pt-first').value = data.user?.first_name || '';
+        document.getElementById('pt-last').value = data.user?.last_name || '';
+        document.getElementById('pt-national').value = data.user?.national_code || '';
+        document.getElementById('pt-phone').value = data.user?.phone_number || '';
+        document.getElementById('patient-card').classList.remove('hidden');
+
+        const userBadge = document.getElementById('patient-card-badge');
+        if (userBadge) {
+            userBadge.innerHTML = `<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> مشاهده توسط مدیر`;
+        }
+
+        if (data.responses && data.responses.length > 0) {
+            const answers = {};
+            const confidence = {};
+            data.responses.forEach(resp => {
+                if (resp.extracted_value) {
+                    answers[resp.v_code] = resp.extracted_value;
+                }
+                if (resp.ai_confidence) {
+                    confidence[resp.v_code] = resp.ai_confidence;
+                }
+            });
+
+            Object.entries(answers).forEach(([vcode, val]) => {
+                if (val !== null && val !== undefined) sessionContext[vcode] = String(val);
+            });
+            Object.entries(confidence).forEach(([vcode, conf]) => {
+                if (conf !== null && conf !== undefined) sessionConfidence[vcode] = conf;
+            });
+
+            applyAiResults(answers);
+        }
+
+        // Cross-form answers: parent fields that live in another form the
+        // user already submitted. Required for visibility_rules /
+        // deactive_options on the current form to evaluate against parents
+        // recorded elsewhere (e.g. A4 gender in form 1 -> disable option 19
+        // of K1 in form 2).
+        if (data.cross_form_answers) {
+            Object.entries(data.cross_form_answers).forEach(([vcode, val]) => {
+                if (val === null || val === undefined || val === '') return;
+                if (sessionContext[vcode] === undefined) {
+                    sessionContext[vcode] = String(val);
+                }
+            });
+        }
+
+        updateQuestionVisibility();
+
+        document.getElementById('status-badge').textContent = data.status === 'completed' ? 'تکمیل شده' : 'پیش‌نویس';
+
+        makeFormReadOnly();
+        setupAdminViewButtons();
+
+        updateProgressPanel();
+    } catch (err) {
+        console.error('Failed to load admin submission data:', err);
+        showToast('خطا در بارگذاری اطلاعات پاسخ‌ها');
+    }
+}
+
+function makeFormReadOnly() {
+    document.querySelectorAll('input[data-vcode], select[data-vcode], textarea[data-vcode]').forEach(input => {
+        input.readOnly = true;
+        input.disabled = true;
+        input.classList.add('bg-gray-100');
+    });
+    document.querySelectorAll('section[id^="sect-"] button[id^="btn-"]').forEach(btn => {
+        btn.style.display = 'none';
+    });
+}
+
+function setupAdminViewButtons() {
+    const submitBtn = document.getElementById('panel-submit-btn');
+    if (!submitBtn) return;
+
+    const footer = submitBtn.parentElement;
+    footer.innerHTML = `
+        <div class="flex flex-col gap-3 w-full">
+            <button type="button" onclick="runAdminFormCheck()"
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl transition-all text-sm shadow-sm">
+                <span class="flex items-center justify-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                    </svg>
+                    بررسی فرم
+                </span>
+            </button>
+            <button type="button" onclick="window.location.href='/dashboard?section=submissions'"
+                    class="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 px-4 rounded-xl transition-all text-sm">
+                <span class="flex items-center justify-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+                    </svg>
+                    بازگشت به لیست پرسشنامه‌ها
+                </span>
+            </button>
+        </div>`;
+}
+
+async function runAdminFormCheck() {
+    const footer = document.querySelector('#progress-panel .panel-footer');
+    const btn = document.querySelector('#progress-panel .panel-footer button');
+    if (!btn) return;
+
+    const originalHTML = btn.innerHTML;
+    btn.innerHTML = `<span class="flex items-center justify-center gap-2"><svg class="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> در حال بررسی...</span>`;
+    btn.disabled = true;
+
+    try {
+        const res = await fetch('/check-final-anomalies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                submission_id: currentSubmissionId,
+                answers: sessionContext,
+                confidence_reasons: sessionConfidenceReasons,
+            })
+        });
+        const data = await res.json();
+        const warnings = (!data.error && data.warnings) ? data.warnings : [];
+
+        fieldWarnings = {};
+        warnings.forEach(w => {
+            if (!fieldWarnings[w.v_code]) fieldWarnings[w.v_code] = [];
+            fieldWarnings[w.v_code].push({
+                message: w.message,
+                severity: w.severity || 'warning'
+            });
+        });
+
+        applyFieldWarnings();
+        updateSectionBadges();
+        updateWarningPanel();
+
+        if (warnings.length > 0) {
+            const list = document.getElementById('warning-list');
+            if (list) list.classList.add('active');
+            showToast(`${warnings.length} مورد不对劲 یافت شد`);
+        } else {
+            showToast('مورد不对劲ی یافت نشد - فرم صحیح است');
+        }
+    } catch (err) {
+        console.error('Admin form check failed:', err);
+        showToast('خطا در بررسی فرم');
+    } finally {
+        btn.innerHTML = originalHTML;
+        btn.disabled = false;
+    }
+}
 
 // Add this helper function at the top
 function getBestAudioMimeType() {
@@ -256,6 +442,8 @@ function updateQuestionVisibility() {
 }
 
 // ---------- Question-Level Dependency Rules (visibility_rules JSONB) ----------
+// Each rule may carry `deactive_options`: when the rule's parent answer
+// matches, the listed option codes of the current question are disabled.
 function normalizeRules(raw) {
     if (!raw) return null;
     let rules = raw;
@@ -265,7 +453,13 @@ function normalizeRules(raw) {
     if (!rules || typeof rules !== 'object' || !Array.isArray(rules.rules)) return null;
     const clean = rules.rules
         .filter(r => r && r.v_code && Array.isArray(r.values) && r.values.length > 0)
-        .map(r => ({ v_code: String(r.v_code), values: r.values.map(String) }));
+        .map(r => {
+            const rule = { v_code: String(r.v_code), values: r.values.map(String) };
+            if (Array.isArray(r.deactive_options) && r.deactive_options.length > 0) {
+                rule.deactive_options = r.deactive_options.map(String);
+            }
+            return rule;
+        });
     if (clean.length === 0) return null;
     return { logic: rules.logic === 'any' ? 'any' : 'all', rules: clean };
 }
@@ -317,6 +511,46 @@ function getQuestionRuleState(vcode) {
     // logic "all"
     if (results.includes('pending')) return 'pending';
     return results.every(r => r === 'pass') ? 'applicable' : 'na';
+}
+
+// Returns the list of option codes that should be deactivated on the
+// question owning these rules. Each rule may carry a `deactive_options`
+// list — when that rule's parent answer matches, those option codes
+// become unavailable (greyed out + uncheckable) on the current question.
+function getDeactiveOptionsFor(vcode) {
+    const rules = questionRulesMap[vcode];
+    if (!rules) return [];
+    const out = [];
+    const seen = new Set();
+    rules.rules.forEach(rule => {
+        if (!Array.isArray(rule.deactive_options) || rule.deactive_options.length === 0) return;
+        const state = evaluateRuleState(rule);
+        if (state !== 'pass') return;
+        rule.deactive_options.forEach(opt => {
+            const k = String(opt);
+            if (!seen.has(k)) {
+                seen.add(k);
+                out.push(k);
+            }
+        });
+    });
+    return out;
+}
+
+// Evaluate a single rule's parent match state without computing the full
+// question tri-state ('pass' | 'fail' | 'pending').
+function evaluateRuleState(rule) {
+    let parentValue = getEffectiveAnswer(rule.v_code);
+    if (parentValue === null || parentValue === undefined) return 'pending';
+    parentValue = String(parentValue).trim();
+    if (parentValue === '') return 'pending';
+    if (parentValue.toUpperCase() === 'N/A') return 'fail';
+    const allowed = rule.values.map(String);
+    if (parentValue.includes(',')) {
+        const selected = parentValue.split(',').map(v => v.trim()).filter(Boolean);
+        return selected.some(v => allowed.includes(v)) ? 'pass' : 'fail';
+    }
+    return allowed.includes(parentValue) ? 'pass' : 'fail';
 }
 
 // Wrapper around JUST the control (options row / input box) — dimming for
@@ -400,6 +634,61 @@ function applyQuestionRulesVisibility() {
         if (plainBadge) badges.push(plainBadge);
         document.querySelectorAll(`[id^="na-badge-${vcode}_"]`).forEach(b => badges.push(b));
         badges.forEach(b => { b.style.display = state === 'na' ? 'inline-block' : 'none'; });
+
+        // Per-rule deactive_options: grey out + uncheck option codes whose
+        // parent rule currently passes. Independent of the question's overall
+        // tri-state, so it works for both applicable and na states.
+        applyDeactiveOptionsFor(vcode);
+    });
+}
+
+// Per-question option-level deactivation. Scoped to radio / checkbox inputs
+// (the only response types that have option codes). When a rule lists
+// deactive_options and the parent answer matches, the matching option cards
+// become unselectable, the input is unchecked, and the label is dimmed.
+function applyDeactiveOptionsFor(vcode) {
+    const deactive = getDeactiveOptionsFor(vcode);
+    if (deactive.length === 0) {
+        // Re-enable any previously-deactivated option for this question
+        const prev = document.querySelectorAll('input[type="radio"][data-vcode="' + vcode + '"][data-deactive="1"], input[type="checkbox"][data-vcode="' + vcode + '"][data-deactive="1"]');
+        prev.forEach(inp => {
+            inp.disabled = !!inp.dataset.na;
+            delete inp.dataset.deactive;
+            const label = inp.closest('label');
+            if (label) {
+                label.classList.remove('opacity-40', 'pointer-events-none', 'cursor-not-allowed');
+                label.title = '';
+            }
+        });
+        return;
+    }
+    const deactiveSet = new Set(deactive.map(String));
+    const selector = [
+        'input[type="radio"][data-vcode="' + vcode + '"]',
+        'input[type="checkbox"][data-vcode="' + vcode + '"]',
+    ].join(',');
+    const inputs = Array.from(document.querySelectorAll(selector));
+    inputs.forEach(inp => {
+        const label = inp.closest('label');
+        if (deactiveSet.has(String(inp.value))) {
+            if (inp.checked) inp.checked = false;
+            inp.disabled = true;
+            inp.dataset.deactive = '1';
+            if (label) {
+                label.classList.add('opacity-40', 'pointer-events-none', 'cursor-not-allowed');
+                label.title = 'این گزینه توسط قوانین فرم غیرفعال شده است';
+            }
+        } else {
+            // Only re-enable if the option is NOT also N/A-tagged by visibility
+            if (inp.dataset.deactive === '1') {
+                inp.disabled = !!inp.dataset.na;
+                delete inp.dataset.deactive;
+                if (label) {
+                    label.classList.remove('opacity-40', 'pointer-events-none', 'cursor-not-allowed');
+                    label.title = '';
+                }
+            }
+        }
     });
 }
 

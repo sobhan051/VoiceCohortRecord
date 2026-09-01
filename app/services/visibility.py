@@ -6,7 +6,7 @@ Rules live on ``questions.visibility_rules`` (JSONB) and look like:
         "logic": "all",   # "all" = AND over rules, "any" = OR
         "rules": [
             {"v_code": "R1", "values": ["1"]},
-            {"v_code": "R4", "values": ["1", "2"]}
+            {"v_code": "R4", "values": ["1", "2"], "deactive_options": ["3"]}
         ]
     }
 
@@ -17,6 +17,9 @@ Semantics (mirrored 1:1 in static/app.js):
 - MultiSelect parents store "1,3" — the rule passes if ANY selected code matches.
 - Grouped (repeated-entry) parents store "BASE_0", "BASE_1", ... — a rule on
   such a parent passes if ANY stored entry matches.
+- Each rule may carry ``deactive_options``: a list of option codes of the
+  current question that should be disabled while the rule's parent answer
+  matches. Use this for "if A24 ∈ {2,3,4} then disable option 1 and 3 of A25".
 
 ``normalize_answers`` is the backend correction step: it forces "N/A" onto
 non-applicable answers and strips bogus "N/A" values from applicable ones, so
@@ -30,7 +33,12 @@ _INDEXED_RE = re.compile(r"^(.+?)_(\d+)$")
 
 def parse_rules(raw):
     """Validate/normalize a raw visibility_rules value. Returns
-    {"logic": "all"|"any", "rules": [...]} or None when absent/invalid."""
+    {"logic": "all"|"any", "rules": [...]} or None when absent/invalid.
+
+    Each rule may carry an optional ``deactive_options`` list: when the rule's
+    parent question evaluates to TRUE (matches one of ``values``), those option
+    codes of the current question are disabled.
+    """
     if raw is None:
         return None
     if isinstance(raw, str):
@@ -51,7 +59,11 @@ def parse_rules(raw):
         values = r.get("values")
         if not v_code or not isinstance(values, list) or not values:
             continue
-        rules.append({"v_code": str(v_code), "values": [str(v) for v in values]})
+        rule = {"v_code": str(v_code), "values": [str(v) for v in values]}
+        deactive = r.get("deactive_options")
+        if isinstance(deactive, list) and deactive:
+            rule["deactive_options"] = [str(v) for v in deactive]
+        rules.append(rule)
     if not rules:
         return None
     logic = raw.get("logic", "all")
@@ -135,3 +147,28 @@ def normalize_answers(questions, answers):
             for k in own_keys:
                 answers[k] = "N/A"
     return answers, applicable_map
+
+
+def get_deactive_options(rules, answers):
+    """Collect every option code that should be deactivated on the question
+    that owns these rules. Each rule may list ``deactive_options``; if the
+    rule's parent answer matches the rule, those options become inactive.
+
+    Returns a list of option codes (possibly empty, de-duplicated, order
+    preserved).
+    """
+    rules = parse_rules(rules)
+    if not rules:
+        return []
+    out = []
+    seen = set()
+    for r in rules["rules"]:
+        deactive = r.get("deactive_options")
+        if not deactive:
+            continue
+        if _rule_ok(r, answers):
+            for opt in deactive:
+                if opt not in seen:
+                    seen.add(opt)
+                    out.append(opt)
+    return out
