@@ -30,7 +30,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const urlParams = new URLSearchParams(window.location.search);
     adminViewMode = urlParams.get('admin_view') === 'true';
     adminSubmissionId = urlParams.get('submission_id');
-    const selectedFormId = urlParams.get('form_id') || localStorage.getItem('selected_form_id') || '';
+    // Render from the URL param ONLY. localStorage may hold a stale form id
+    // from an older visit (it is never refreshed on reorder), which would
+    // render a different form than the one the dashboard link pointed to.
+    const selectedFormId = urlParams.get('form_id') || '';
 
     try {
         const url = selectedFormId ? `/get-form-structure?form_id=${selectedFormId}` : '/get-form-structure';
@@ -313,10 +316,9 @@ async function autoStartFromSession() {
 
     // Auto-start submission using the user_id from session
     try {
-        // Include form_id if stored (from dashboard form selection)
-        const selectedFormId = localStorage.getItem('selected_form_id') || null;
+        const urlFormId = new URLSearchParams(window.location.search).get('form_id');
         const body = { user_id: userData.user_id };
-        if (selectedFormId) body.form_id = selectedFormId;
+        if (urlFormId) body.form_id = urlFormId;
         const res = await fetch('/start-submission', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

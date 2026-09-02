@@ -280,10 +280,6 @@ async def start_submission(
             )
             db.add(user)
             db.flush()  # populate user_id without ending the transaction
-
-    # Resolve the form this submission belongs to. The questionnaire UI doesn't
-    # track a form, so accept an optional form_id and otherwise fall back to the
-    # first available form. submissions.form_id is NOT NULL in the database.
     form = None
     form_id = payload.get("form_id")
     if form_id:
@@ -294,7 +290,13 @@ async def start_submission(
         if not form:
             return {"error": "فرم یافت نشد"}
     if form is None:
-        form = db.query(models.Form).order_by(models.Form.form_name).first()
+        from app.services.forms import is_form_fully_completed, locked_by_earlier_forms
+        for f in db.query(models.Form).order_by(models.Form.sort_order, models.Form.form_id).all():
+            if not locked_by_earlier_forms(db, user.user_id, f.form_id):
+                form = f
+                break
+        if form is None:  # every form locked (shouldn't happen: first form has no predecessors)
+            form = db.query(models.Form).order_by(models.Form.sort_order).first()
     if form is None:
         return {"error": "هیچ فرمی تعریف نشده است"}
 
@@ -366,6 +368,8 @@ async def start_submission(
         "user_id": str(user.user_id),
         "user_name": f"{user.first_name or ''} {user.last_name or ''}".strip(),
         "national_code": user.national_code,
+        "form_id": str(form.form_id),
+        "form_name": form.form_name,
         "status": submission.status,
         "answers": answers,
         "confidence": confidence,
