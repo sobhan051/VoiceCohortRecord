@@ -115,6 +115,10 @@ dashboards, submission browsing, user management, and AI request logs.
   respect `GENAI_PROXY`, `HTTP_PROXY`, or `HTTPS_PROXY`.
 - **PostgreSQL persistence** via SQLAlchemy ORM with UUID primary keys and JSONB
   columns.
+- **Concurrency-safe request handling** — all endpoints run blocking DB/AI work
+  in FastAPI's threadpool (never on the event loop), and the engine uses a
+  tuned, pre-pinged connection pool (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`,
+  `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE` env knobs).
 
 ---
 
@@ -141,8 +145,8 @@ POST /process-voice ──► ai_engine.process_audio() ──► Gemini (flash-
   │                         returns {transcript, data, confidence, reasons}
   │  stores Response rows
   ▼
-POST /check-section-anomalies ──► ai_engine.check_anomalies() ──► Gemini (flash)
-                                    returns [{v_code, message, severity}]
+POST /check-section-anomalies ──► queues background sanity job ──► returns {check_id} at once
+GET  /check-section-anomalies/result/{check_id} ──► {status, warnings} (polled by the client)
 
 Admin (static/admin.html + admin.js) ──► /api/admin/* ──► PostgreSQL
 ```

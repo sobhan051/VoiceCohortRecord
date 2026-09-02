@@ -879,7 +879,7 @@ function collectGroupedAnswers() {
     });
 }
 
-function applyGroupedAiResults(data) {
+function applyGroupedAiResults(data, sectionKey) {
     // First pass: figure out how many rows each group needs
     const groupMaxIdx = {}; // { groupPair: maxIdx }
 
@@ -901,6 +901,37 @@ function applyGroupedAiResults(data) {
             }
         }
     });
+
+    // Reset to exactly ONE empty row per group of this section — a re-record
+    // replaces the section, so rows filled by the older extraction must not
+    // survive (clearSectionAiState can't unmount them since addGroupEntrySilent
+    // appends beyond the template row).
+    if (sectionKey) {
+        Object.entries(groupedQuestionsMap).forEach(([gp, qs]) => {
+            if (groupedQuestionsSections[gp] !== sectionKey) return;
+            const container = document.getElementById(`group-entries-${gp}`);
+            if (!container) return;
+            const entries = container.querySelectorAll(`.group-entry[data-group="${gp}"]`);
+            for (let i = entries.length - 1; i > 0; i--) entries[i].remove();
+            const first = container.querySelector(`.group-entry[data-group="${gp}"][data-idx="0"]`);
+            if (first) {
+                first.querySelectorAll('input[data-vcode], select[data-vcode], textarea[data-vcode]').forEach(input => {
+                    if (input.type === 'checkbox' || input.type === 'radio') input.checked = false;
+                    else input.value = '';
+                    delete input.dataset.na;
+                });
+            }
+            groupEntryCounts[gp] = 1;
+            const counter = document.getElementById(`group-count-${gp}`);
+            if (counter) counter.textContent = '1 ' + '\u0631\u062f\u06cc\u0641';
+            // Keep answer keys in sync with the reset rows
+            qs.forEach(q => {
+                Object.keys(sessionContext).forEach(k => {
+                    if (k === q.v_code || (new RegExp(`^${q.v_code}_\\d+$`)).test(k)) delete sessionContext[k];
+                });
+            });
+        });
+    }
 
     // Auto-add rows for groups that need more than currently exist
     Object.entries(groupMaxIdx).forEach(([gp, maxIdx]) => {
@@ -1478,6 +1509,12 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
         }
 
         if (result.data) {
+            // A new recording REPLACES this section's previous answers —
+            // clear old state before applying, so options selected by the
+            // older extraction (multiselect checkboxes, grouped rows) do not
+            // survive alongside the new values.
+            clearSectionAiState(sectionKey);
+
             // Update session context — map plain grouped v_codes to __0
             Object.entries(result.data).forEach(([vcode, val]) => {
                 if (val !== null && val !== undefined) {
@@ -1531,7 +1568,7 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
                 });
             }
 
-            applyAiResults(result.data);
+            applyAiResults(result.data, sectionKey);
 
             updateQuestionVisibility();
             updateProgressPanel();
@@ -1542,30 +1579,10 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
             delete lastAudioBySection[sectionKey];
             delete lastAudioBySection[`${sectionKey}_format`];
 
-            // Anomaly check (non‑blocking)
-            try {
-                const anomalyResp = await fetch("/check-section-anomalies", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        section_key: sectionKey,
-                        answers: sessionContext,
-                        confidence_reasons: result.confidence_reasons || {},
-                        submission_id: currentSubmissionId
-                    })
-                });
-                const anomalyData = await anomalyResp.json();
-                if (!anomalyData.error && anomalyData.warnings && anomalyData.warnings.length > 0) {
-                    anomalyData.warnings.forEach(w => {
-                        addFieldWarning(w.v_code, w.message, w.severity);
-                    });
-                    applyFieldWarnings();
-                    updateSectionBadges();
-                    updateWarningPanel();
-                }
-            } catch (anomalyErr) {
-                console.error("Section anomaly check failed:", anomalyErr);
-            }
+            // Sanity check — fire-and-forget, NON-BLOCKING. The server queues
+            // the AI pass and returns a check_id at once; we poll for the
+            // result so the UI (and other users' requests) never wait on it.
+            runSectionSanityCheck(sectionKey, result.confidence_reasons || {});
         }
     } catch (err) {
         console.error("Fetch error:", err);
@@ -1627,6 +1644,66 @@ function showToast(message) {
         toast.style.transition = 'opacity 0.3s';
         setTimeout(() => toast.remove(), 300);
     }, 5000);
+}
+
+// ---------- Section sanity check (non-blocking) ----------
+// The server queues the Gemini sanity pass and returns a check_id at once.
+// We poll the result endpoint in the background; field workers keep working
+// while it runs and warnings appear as soon as they are ready.
+const SANITY_POLL_INTERVAL_MS = 2500;
+const SANITY_POLL_MAX_MS = 120000;   // give up polling after 2 minutes
+
+async function runSectionSanityCheck(sectionKey, confidenceReasons) {
+    const startedAt = Date.now();
+    try {
+        const resp = await fetch("/check-section-anomalies", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                section_key: sectionKey,
+                answers: sessionContext,
+                confidence_reasons: confidenceReasons || {},
+                submission_id: currentSubmissionId
+            })
+        });
+        const data = await resp.json();
+        if (data.error || !data.check_id) {
+            console.error("Section sanity check queue failed:", data.error || data);
+            return;
+        }
+
+        const checkId = data.check_id;
+        while (Date.now() - startedAt < SANITY_POLL_MAX_MS) {
+            await new Promise(r => setTimeout(r, SANITY_POLL_INTERVAL_MS));
+            let pollData;
+            try {
+                const pollResp = await fetch(`/check-section-anomalies/result/${checkId}`);
+                pollData = await pollResp.json();
+            } catch (pollErr) {
+                console.error("Sanity check polling failed:", pollErr);
+                return;
+            }
+            if (pollData.status === "pending") continue;
+            if (pollData.status === "error") {
+                console.error("Section sanity check failed:", pollData.error);
+                return;
+            }
+            // status "done" — surface the warnings if the section is still the
+            // one being looked at; re-recording replaces them anyway.
+            if (pollData.warnings && pollData.warnings.length > 0) {
+                pollData.warnings.forEach(w => {
+                    addFieldWarning(w.v_code, w.message, w.severity);
+                });
+                applyFieldWarnings();
+                updateSectionBadges();
+                updateWarningPanel();
+            }
+            return;
+        }
+        console.warn("Sanity check timed out polling for result", checkId);
+    } catch (err) {
+        console.error("Section sanity check failed:", err);
+    }
 }
 
 // ---------- Warning UI functions ----------
@@ -1718,10 +1795,52 @@ function toggleWarningPanel() {
     list.classList.toggle('active');
 }
 
+// ---------- Section state reset (a re-record replaces the section) ----------
+// The server deletes and re-saves a section's responses on every new
+// recording. Mirror that on the client: before applying the new extraction,
+// clear every answer key and input belonging to this section, so options
+// selected by the OLDER extraction (multiselect checkboxes, surplus grouped
+// rows, N/A tags) do not survive a re-record.
+function clearSectionAiState(sectionKey) {
+    const sect = document.getElementById(`sect-${sectionKey}`);
+    if (!sect) return;
+
+    // Every vcode rendered in this section (grouped inputs are indexed M3_0…)
+    const vcodes = new Set();
+    sect.querySelectorAll('[data-vcode]').forEach(input => {
+        const vc = input.dataset.vcode;
+        if (vc) vcodes.add(vc);
+    });
+
+    // Drop answer/confidence keys for these vcodes and their base forms
+    // (a previous extraction may have stored "M3" for a grouped question).
+    const isSectionKey = k => vcodes.has(k) || vcodes.has(k.replace(/_\d+$/, ''));
+    [sessionContext, sessionConfidence, sessionConfidenceReasons, fieldWarnings].forEach(store => {
+        Object.keys(store).forEach(k => {
+            if (isSectionKey(k)) delete store[k];
+        });
+    });
+
+    // Clear the rendered inputs (checkboxes/radios unselected, values empty).
+    // Visibility/disabled state is re-resolved by updateQuestionVisibility().
+    sect.querySelectorAll('input[data-vcode], select[data-vcode], textarea[data-vcode]').forEach(input => {
+        if (input.type === 'checkbox' || input.type === 'radio') {
+            input.checked = false;
+        } else {
+            input.value = '';
+        }
+        delete input.dataset.na;
+    });
+
+    applyFieldWarnings();
+    updateSectionBadges();
+    updateWarningPanel();
+}
+
 // ---------- Apply AI results (unchanged) ----------
-function applyAiResults(data) {
+function applyAiResults(data, sectionKey) {
     // Handle grouped (indexed) answers
-    applyGroupedAiResults(data);
+    applyGroupedAiResults(data, sectionKey);
 
     Object.keys(data).forEach(vCode => {
         // Skip grouped v_codes (already handled above)
