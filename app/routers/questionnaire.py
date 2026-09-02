@@ -625,7 +625,7 @@ async def process_voice(
         db.commit()
 
         # Extraction succeeded: clean up the original + processed clips.
-        for p in {file_path, processed_path}:
+        for p in {file_path}:
             try:
                 os.remove(p)
             except OSError:
