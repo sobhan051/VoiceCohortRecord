@@ -4,6 +4,8 @@ import json
 import os
 import re
 import shutil
+import threading
+import time
 import uuid
 from datetime import datetime
 
@@ -14,8 +16,8 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.core.config import UPLOAD_DIR
-from app.db.session import get_db
-from app.services.ai_engine import PromptGenerator
+from app.db.session import get_db, SessionLocal
+from app.services.ai_engine import PromptGenerator, get_last_usage
 from app.services.visibility import normalize_answers
 from app.services.responses import upsert_response, delete_section_responses
 
@@ -27,8 +29,24 @@ from app.services.health_check import (
 router = APIRouter()
 
 
+def accumulate_token_usage(current, usage):
+    """Add an (input, output) usage tuple onto the stored "input,output" string.
+
+    ``current`` is the existing submissions.token_used value (or None).
+    Returns the new "input,output" string with the usage SUMMED onto whatever
+    was already recorded for this submission.
+    """
+    try:
+        parts = str(current or "0,0").split(",")
+        cur_in = int(parts[0]) if parts and parts[0].strip() else 0
+        cur_out = int(parts[1]) if len(parts) > 1 and parts[1].strip() else 0
+    except (ValueError, TypeError):
+        cur_in = cur_out = 0
+    return f"{cur_in + usage[0]},{cur_out + usage[1]}"
+
+
 @router.get("/get-form-structure")
-async def get_form(form_id: str = None, db: Session = Depends(get_db)):
+def get_form(form_id: str = None, db: Session = Depends(get_db)):
     form_obj = None
     if form_id:
         try:
@@ -67,11 +85,84 @@ async def get_form(form_id: str = None, db: Session = Depends(get_db)):
     return result
 
 
+# ---------------- Section sanity check (non-blocking) ----------------
+# The sanity pass calls Gemini, which can take tens of seconds. Running it
+# inside the request would hold the worker (and previously the whole event
+# loop) hostage. Instead, the POST endpoint validates and queues the job,
+# returning a check_id immediately; the client polls the result endpoint.
+
+_anomaly_jobs = {}                 # check_id -> {"status", "warnings"/"error", ...}
+_anomaly_jobs_lock = threading.Lock()
+_ANOMALY_JOB_TTL_SECONDS = 600     # finished jobs are forgotten after 10 min
+
+
+def _purge_old_anomaly_jobs():
+    """Drop finished jobs older than the TTL (called under the lock)."""
+    cutoff = time.time() - _ANOMALY_JOB_TTL_SECONDS
+    for cid in [
+        cid for cid, job in _anomaly_jobs.items()
+        if job.get("status") in ("done", "error") and job.get("finished_at", 0) < cutoff
+    ]:
+        _anomaly_jobs.pop(cid, None)
+
+
+def _run_section_anomaly_job(check_id, filtered_answers, questions_meta,
+                             confidence_reasons, transcript, submission_id):
+    """Background worker: run the AI sanity pass and record its warnings.
+
+    Runs on its own thread with its own DB session (needed only for the
+    best-effort token-usage bookkeeping), so the request path is never
+    blocked by the AI call.
+    """
+    try:
+        warnings = PromptGenerator.check_anomalies(
+            filtered_answers, questions_meta, confidence_reasons, transcript
+        )
+        # Token usage of this sanity check, stored as "input,output" on the
+        # submission — summed onto any previously recorded usage. Best-effort
+        # bookkeeping: never let it fail the anomaly check itself.
+        if submission_id:
+            usage = get_last_usage()
+            if usage:
+                job_db = SessionLocal()
+                try:
+                    sub = job_db.query(models.Submission).filter(
+                        models.Submission.submission_id == int(submission_id)
+                    ).first()
+                    if sub:
+                        sub.token_used = accumulate_token_usage(sub.token_used, usage)
+                        job_db.commit()
+                except Exception:
+                    job_db.rollback()
+                finally:
+                    job_db.close()
+        with _anomaly_jobs_lock:
+            job = _anomaly_jobs.get(check_id)
+            if job is not None:
+                job["status"] = "done"
+                job["warnings"] = warnings or []
+                job["finished_at"] = time.time()
+    except Exception as e:
+        print(f"Per‑section anomaly check error: {e}")
+        with _anomaly_jobs_lock:
+            job = _anomaly_jobs.get(check_id)
+            if job is not None:
+                job["status"] = "error"
+                job["error"] = str(e)
+                job["finished_at"] = time.time()
+
+
 @router.post("/check-section-anomalies")
-async def check_section_anomalies(
+def check_section_anomalies(
     payload: dict,   # expects { "section_key": "...", "answers": {...} }
     db: Session = Depends(get_db)
 ):
+    """Queue a per-section sanity pass and return immediately.
+
+    Returns ``{"check_id": ..., "status": "queued"}``; the warnings are
+    fetched afterwards from
+    ``GET /check-section-anomalies/result/{check_id}``.
+    """
     section_key = payload.get("section_key")
     answers = payload.get("answers", {})
     confidence_reasons = payload.get("confidence_reasons", None)
@@ -129,18 +220,47 @@ async def check_section_anomalies(
         except (ValueError, AttributeError):
             pass
 
-    try:
-        warnings = PromptGenerator.check_anomalies(
-            filtered_answers, questions_meta, confidence_reasons, transcript
-        )
-        return {"warnings": warnings}
-    except Exception as e:
-        print(f"Per‑section anomaly check error: {e}")
-        return {"error": str(e)}
+    # Queue the AI sanity pass on a background thread and return at once.
+    check_id = uuid.uuid4().hex
+    with _anomaly_jobs_lock:
+        _purge_old_anomaly_jobs()
+        _anomaly_jobs[check_id] = {"status": "pending"}
+
+    # Daemon thread: never blocks the request, dies with the process.
+    threading.Thread(
+        target=_run_section_anomaly_job,
+        args=(check_id, filtered_answers, questions_meta,
+              confidence_reasons, transcript, submission_id),
+        daemon=True,
+        name=f"sanity-{check_id[:8]}",
+    ).start()
+
+    return {"check_id": check_id, "status": "queued"}
+
+
+@router.get("/check-section-anomalies/result/{check_id}")
+def check_section_anomalies_result(check_id: str):
+    """Poll the status of a queued section sanity check.
+
+    Returns ``{"status": "pending"}`` while the AI call runs, then
+    ``{"status": "done", "warnings": [...]}`` or
+    ``{"status": "error", "error": ...}``.
+    """
+    with _anomaly_jobs_lock:
+        job = _anomaly_jobs.get(check_id)
+        if job is None:
+            return {"status": "error", "error": "check not found (expired or unknown)"}
+        if job["status"] == "done":
+            out = {"status": "done", "warnings": job.get("warnings", [])}
+        elif job["status"] == "error":
+            out = {"status": "error", "error": job.get("error", "unknown error")}
+        else:
+            out = {"status": "pending"}
+    return out
 
 
 @router.post("/check-final-anomalies")
-async def check_final_anomalies(
+def check_final_anomalies(
     payload: dict,   # { "submission_id": "...", "answers": {...}, "confidence_reasons": {...} }
     db: Session = Depends(get_db)
 ):
@@ -222,6 +342,12 @@ async def check_final_anomalies(
         warnings = PromptGenerator.check_final_anomalies(
             normalized_answers, all_questions_meta, transcripts, confidence_reasons
         )
+        # Token usage of this final sanity pass, stored as "input,output" —
+        # summed onto any previously recorded usage.
+        usage = get_last_usage()
+        if usage:
+            submission.token_used = accumulate_token_usage(submission.token_used, usage)
+            db.commit()
         return {"warnings": warnings}
     except Exception as e:
         print(f"Final anomaly check error: {e}")
@@ -229,7 +355,7 @@ async def check_final_anomalies(
 
 
 @router.post("/start-submission")
-async def start_submission(
+def start_submission(
     payload: dict,   # { "user_id": "..." }  OR  { "user": { first_name, last_name, national_code, phone_number } }
     db: Session = Depends(get_db)
 ):
@@ -361,7 +487,7 @@ async def start_submission(
 
 
 @router.post("/complete-submission")
-async def complete_submission(
+def complete_submission(
     payload: dict,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
@@ -498,7 +624,7 @@ async def complete_submission(
 
 
 @router.post("/process-voice")
-async def process_voice(
+def process_voice(
     section_key: str = Form(...),
     audio: UploadFile = File(...),
     submission_id: str = Form(None),
@@ -534,14 +660,16 @@ async def process_voice(
 
     # Resolve the target submission
     sub_id = None
+    submission = None
     if submission_id:
         try:
             sub_id = int(submission_id)
         except (ValueError, TypeError):
             return {"error": "شناسه ثبت نامعتبر است"}
-        if not db.query(models.Submission).filter(
+        submission = db.query(models.Submission).filter(
             models.Submission.submission_id == sub_id
-        ).first():
+        ).first()
+        if not submission:
             return {"error": "ثبت مورد نظر یافت نشد"}
 
     questions = db.query(models.Question).filter(
@@ -558,6 +686,12 @@ async def process_voice(
 
     try:
         result = PromptGenerator.process_audio(file_path, questions)
+        # Token usage of the full voice process (audio sent -> JSON responses),
+        # stored as "input,output" — SUMMED onto any previously recorded usage.
+        if submission is not None:
+            usage = get_last_usage()
+            if usage:
+                submission.token_used = accumulate_token_usage(submission.token_used, usage)
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')
         confidence_map = result.get('confidence', {}) or {}
@@ -568,14 +702,33 @@ async def process_voice(
             ).all():
                 if r.extracted_value is not None:
                     merged[r.v_code] = r.extracted_value
-        merged.update({k: v for k, v in extracted_data.items() if v is not None})
-        merged, _applicable_map = normalize_answers(questions, merged)
+        new_values = {k: v for k, v in extracted_data.items() if v is not None}
+        # The full answer set (old responses + new extraction) is used ONLY as
+        # context for dependency resolution — never persisted as-is.
+        merged.update(new_values)
+        context, _applicable_map = normalize_answers(questions, merged)
+
+        # Persist ONLY what the new recording actually produced. The section's
+        # previous responses are deleted below, so old values must not be
+        # resurrected here — otherwise a re-recorded multiselect keeps the
+        # options selected by the older extraction that the new recording did
+        # not mention.
         section_vcodes = {q.v_code for q in questions}
         filtered_data = {}
-        for k, v in merged.items():
+        for k, v in new_values.items():
+            # A value the dependency rules rule out becomes N/A.
+            filtered_data[k] = (
+                "N/A" if str(context.get(k, v)).strip().upper() == "N/A" else v
+            )
+        # Keep N/A flags the NEW context forces for section questions the
+        # recording did not mention (e.g. a parent answer changed).
+        for k, v in context.items():
+            if k in filtered_data:
+                continue
             m = re.match(r'^(.+?)_(\d+)$', k)
-            if (m.group(1) if m else k) in section_vcodes:
-                filtered_data[k] = v
+            base = m.group(1) if m else k
+            if base in section_vcodes and str(v).strip().upper() == "N/A":
+                filtered_data[k] = "N/A"
         extracted_data = filtered_data
         
         # A new voice recording for this section replaces the previous state of this section.

@@ -16,7 +16,7 @@
 - [X] visibility_check between forms
 - [X] make export section in admin dashboard
 - [x] test vitamin pills tracker
+- [x] only 1 question and then submitting would make the whole section تکمیل شد
 - [x] fix Sanity check is doing Advice? we need it just to check to make sure the user said the right answer. 
 - [ ] get the fonts and other stuff for UI offline
 - [ ] هیچکدام option should disable the other options (small bug)
-- [x] only 1 question and then submitting would make the whole section تکمیل شد

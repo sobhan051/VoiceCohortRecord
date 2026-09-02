@@ -323,6 +323,23 @@ async function loadAdminDashboard(container) {
 }
 
 // ---------- Submissions Management ----------
+function formatTokenUsed(raw) {
+    if (!raw) return '<span class="text-gray-300">—</span>';
+    const parts = String(raw).split(',');
+    if (parts.length === 2) return `ورودی : ${parts[0].trim()} <br> خروجی : ${parts[1].trim()}`;
+    return String(raw);
+}
+
+async function resetSubmissionTokens(submissionId) {
+    if (!confirm('مجموع توکن‌های مصرفی این پرسشنامه صفر شود؟')) return;
+    try {
+        const res = await fetch(`/api/admin/submissions/${submissionId}/reset-tokens`, { method: 'POST' });
+        const result = await res.json();
+        if (result.error) { alert(result.error); return; }
+        showAdminSection('submissions');
+    } catch (e) { alert('خطا در ریست توکن‌ها'); }
+}
+
 async function loadAdminSubmissions(container) {
     container.innerHTML = '<div class="text-center py-20">در حال بارگذاری پرسشنامه‌ها...</div>';
     try {
@@ -342,6 +359,7 @@ async function loadAdminSubmissions(container) {
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">نام کاربر</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">فرم</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">تاریخ</th>
+                                <th class="text-right p-4 text-sm font-bold text-gray-600">توکن مصرفی</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">وضعیت</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">عملیات</th>
                             </tr>
@@ -349,7 +367,7 @@ async function loadAdminSubmissions(container) {
                         <tbody>`;
 
         if (submissions.length === 0) {
-            html += `<tr><td colspan="6" class="text-center p-8 text-gray-500">هیچ پرسشنامه‌ای یافت نشد</td></tr>`;
+            html += `<tr><td colspan="7" class="text-center p-8 text-gray-500">هیچ پرسشنامه‌ای یافت نشد</td></tr>`;
         } else {
             submissions.forEach(sub => {
                 html += `
@@ -358,6 +376,7 @@ async function loadAdminSubmissions(container) {
                         <td class="p-4 text-sm">${sub.user_name || 'نامشخص'}</td>
                         <td class="p-4 text-sm font-medium">${sub.form_name || 'نامشخص'}</td>
                         <td class="p-4 text-sm">${new Date(sub.created_at).toLocaleDateString('fa-IR')}</td>
+                        <td class="p-4 text-sm font-mono whitespace-nowrap">${formatTokenUsed(sub.token_used)}  </td>
                         <td class="p-4">
                             <span class="px-2 py-1 rounded-full text-xs ${sub.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}">
                                 ${sub.status === 'completed' ? 'تکمیل شده' : 'پیش‌نویس'}
@@ -365,6 +384,7 @@ async function loadAdminSubmissions(container) {
                         </td>
                         <td class="p-4 flex gap-2">
                             <button onclick="viewAdminSubmissionForm('${sub.form_id}', '${sub.submission_id}')" class="text-blue-600 hover:text-blue-800 text-sm">بررسی</button>
+                            <button onclick="resetSubmissionTokens('${sub.submission_id}')" class="text-orange-600 hover:text-orange-800 text-sm whitespace-nowrap">ریست توکن</button>
                             <button onclick="deleteAdminSubmission('${sub.submission_id}')" class="text-red-600 hover:text-red-800 text-sm">حذف</button>
                         </td>
                     </tr>`;
@@ -1250,6 +1270,7 @@ window.viewAdminSubmission = viewAdminSubmission;
 window.viewAdminSubmissionForm = viewAdminSubmissionForm;
 window.closeSubmissionModal = closeSubmissionModal;
 window.deleteAdminSubmission = deleteAdminSubmission;
+window.resetSubmissionTokens = resetSubmissionTokens;
 window.deleteAdminResponse = deleteAdminResponse;
 window.showAddUserModal = showAddUserModal;
 window.editAdminUser = editAdminUser;

@@ -103,13 +103,20 @@ request logs, with full management APIs for forms, sections, and questions.
   live as fields are filled or edited.
 
 ### Infrastructure
-- **CDN proxy** — Tailwind CSS and Vazirmatn font proxied through the server
-  (`/cdn/tailwindcss`, `/cdn/vazirmatn`) and cached in memory, so the app works
-  in restricted-network environments.
-- **Outbound proxy support** — Gemini calls and CDN fetches honor
-  `GENAI_PROXY` / `HTTP_PROXY` / `HTTPS_PROXY`.
-- **Docker packaging** — image includes ffmpeg; suitable for Hugging Face
-  Spaces (see deployment below).
+- **CDN proxy** — Tailwind CSS and the Vazirmatn font are proxied through the
+  server (`/cdn/tailwindcss`, `/cdn/vazirmatn`) and cached in memory, so the
+  app works in restricted-network environments. Fetches honor an outbound proxy
+  and fail gracefully.
+- **Outbound proxy support** — both the Gemini client and the CDN fetcher
+  respect `GENAI_PROXY`, `HTTP_PROXY`, or `HTTPS_PROXY`.
+- **PostgreSQL persistence** via SQLAlchemy ORM with UUID primary keys and JSONB
+  columns.
+- **Concurrency-safe request handling** — all endpoints run blocking DB/AI work
+  in FastAPI's threadpool (never on the event loop), and the engine uses a
+  tuned, pre-pinged connection pool (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`,
+  `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE` env knobs).
+
+---
 
 ## Tech stack
 
@@ -135,12 +142,10 @@ POST /process-voice ──► audio_processor (ffmpeg) ──► ai_engine.proce
   │                       returns {transcript, data, confidence, reasons}
   │  stores Response rows
   ▼
-POST /check-section-anomalies / /check-final-anomalies
-  │     returns [{v_code, message, severity}]
-  ▼
-POST /complete-submission
+POST /check-section-anomalies ──► queues background sanity job ──► returns {check_id} at once
+GET  /check-section-anomalies/result/{check_id} ──► {status, warnings} (polled by the client)
 
-Dashboard (static/dashboard.html) ──► /api/dashboard + /api/admin/* ──► PostgreSQL
+Admin (static/admin.html + admin.js) ──► /api/admin/* ──► PostgreSQL
 ```
 
 ## Project structure

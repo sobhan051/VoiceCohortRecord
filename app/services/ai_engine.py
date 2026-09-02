@@ -71,6 +71,42 @@ class _KeyRotator:
 _rotator = _KeyRotator()
 
 
+# ---------- Token usage tracking ----------
+# Thread-local holder for the token usage of the most recent successful AI
+# call made on this thread. The questionnaire router reads it right after an
+# AI call (voice process / sanity checks) and persists it on the submission
+# row as "input,output" — always REPLACING the previous value, never summing.
+_usage_local = threading.local()
+
+
+def extract_token_usage(resp):
+    """Return (input_tokens, output_tokens) from a genai response.
+
+    Output counts both generated candidate tokens and hidden thinking tokens
+    (both are billed as output by the API).
+    """
+    try:
+        um = getattr(resp, "usage_metadata", None)
+        if um is None:
+            return (0, 0)
+        inp = getattr(um, "prompt_token_count", 0) or 0
+        out = (getattr(um, "candidates_token_count", 0) or 0) \
+            + (getattr(um, "thoughts_token_count", 0) or 0)
+        return (int(inp), int(out))
+    except Exception:
+        return (0, 0)
+
+
+def _record_usage(resp):
+    """Remember the usage of the last successful AI call on this thread."""
+    _usage_local.last = extract_token_usage(resp)
+
+
+def get_last_usage():
+    """(input_tokens, output_tokens) of the last AI call on this thread, or None."""
+    return getattr(_usage_local, "last", None)
+
+
 def _classify(err):
     """Map an exception to a retry decision: ('quota'|'transient'|'fatal').
 
@@ -355,11 +391,14 @@ class PromptGenerator:
                 ),
             )
 
+        _t0 = time.monotonic()
         response = _run_with_failover(_call, config.ANOMALY_MODEL)
+        _record_usage(response)  # per-section sanity check
 
         print("\n=== ANOMALY RAW RESPONSE ===")
         print(response.text)
-        print("=== END ANOMALY ===\n")
+        print("=== END ANOMALY ===")
+        print(f"[ai_engine] per-section sanity check took {time.monotonic() - _t0:.2f} s\n")
         try:
             parsed = json.loads(response.text)
             return parsed if isinstance(parsed, list) else [parsed]
@@ -429,11 +468,14 @@ class PromptGenerator:
                 ),
             )
 
+        _t0 = time.monotonic()
         response = _run_with_failover(_call, config.ANOMALY_MODEL)
+        _record_usage(response)  # final sanity check
 
         print("\n=== [FINAL ANOMALY RAW RESPONSE] ===")
         print(response.text)
-        print("=== END FINAL ANOMALY ===\n")
+        print("=== END FINAL ANOMALY ===")
+        print(f"[ai_engine] final sanity check took {time.monotonic() - _t0:.2f} s\n")
 
         try:
             parsed = json.loads(response.text)
@@ -722,14 +764,17 @@ class PromptGenerator:
                 ),
             )
 
+        _t0 = time.monotonic()
         response = _run_with_failover(_call, config.AUDIO_MODEL)
+        _record_usage(response)  # voice process: audio sent -> JSON responses
 
         print("\n=== RAW RESPONSE ===")
         try:
             print(json.dumps(json.loads(response.text), indent=2, ensure_ascii=False))
         except Exception:
             print(response.text)
-        print("=== END RAW ===\n")
+        print("=== END RAW ===")
+        print(f"[ai_engine] voice process (audio -> JSON) took {time.monotonic() - _t0:.2f} s\n")
 
         return json.loads(response.text)
 
@@ -824,8 +869,10 @@ class PromptGenerator:
             )
             return client.models.generate_content(model=model, contents=[prompt], config=cfg)
 
+        _t0 = time.monotonic()
         resp = _run_with_failover(_call, config.HEALTH_MODEL)
-        print("\n=== HEALTH RAW ===\n", resp.text[:4000], "\n=== END HEALTH ===\n")
+        print("\n=== HEALTH RAW ===\n", resp.text[:4000], "\n=== END HEALTH ===")
+        print(f"[ai_engine] health check generation took {time.monotonic() - _t0:.2f} s\n")
         try:
             data = json.loads(resp.text)
         except Exception as e:
