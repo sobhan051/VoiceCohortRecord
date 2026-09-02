@@ -23,19 +23,27 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # Default Gemini models per call type.
 AUDIO_MODEL = "gemini-3-flash-preview"
 ANOMALY_MODEL = "gemini-3-flash-preview"
+HEALTH_MODEL = os.getenv("GEMINI_HEALTH_MODEL", "gemini-3.1-flash-lite")
+
+# Brevo email
+BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
+BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL")
+BREVO_SENDER_NAME = os.getenv("BREVO_SENDER_NAME", "VCR")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://127.0.0.1:8000")
+MAIL_ENABLED = os.getenv("MAIL_ENABLED", "true").lower() not in ("0", "false", "no", "off")
 
 # Models tried (in order) when the primary model returns transient overload
 # ("high demand", 503/500). Full chain per call: [primary] + FALLBACK_MODELS.
 FALLBACK_MODELS = [
     m.strip()
-    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.1-flash-lite,gemini-3.5-flash").split(",")
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",")
     if m.strip()
 ]
 
 # Outbound HTTP timeout for Gemini calls (milliseconds). Audio extraction over a
 # proxy can take a while; too low a value times out a healthy request and forces
 # the field worker to re-record. Tunable via env.
-GENAI_TIMEOUT_MS = int(os.getenv("GENAI_TIMEOUT_MS", "60000"))
+GENAI_TIMEOUT_MS = int(os.getenv("GENAI_TIMEOUT_MS", "90000"))
 
 # Failover/retry tuning for quota ("RESOURCE_EXHAUSTED", 429) and transient
 # overload ("UNAVAILABLE", 503 / "INTERNAL", 500) errors.

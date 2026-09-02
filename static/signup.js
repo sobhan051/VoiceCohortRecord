@@ -32,6 +32,7 @@ document.getElementById('signup-form').addEventListener('submit', async (e) => {
     const last = document.getElementById('signup-last').value.trim();
     const national = digitsOnly(document.getElementById('signup-national').value.trim());
     const phone = digitsOnly(document.getElementById('signup-phone').value.trim());
+    const email = document.getElementById('signup-email').value.trim();
 
     if (!first || !last) {
         showError('نام و نام خانوادگی را وارد کنید.');
@@ -45,13 +46,14 @@ document.getElementById('signup-form').addEventListener('submit', async (e) => {
         showError('شماره تماس باید با ۰۹ شروع شده و ۱۱ رقم باشد.');
         return;
     }
+    if (email && !/[^@]+@[^@]+\.[^@]+/.test(email)) { showError('ایمیل نامعتبر است.'); return; }
 
     setBusy(true);
     try {
         const res = await fetch('/api/signup', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ first_name: first, last_name: last, national_code: national, phone_number: phone }),
+            body: JSON.stringify({ first_name: first, last_name: last, national_code: national, phone_number: phone, email: email || null }),
         });
         const data = await res.json();
         if (data.error) {

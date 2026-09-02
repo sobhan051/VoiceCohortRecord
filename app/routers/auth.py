@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.db.session import get_db
+from app.services.shamsi import gregorian_to_shamsi_str, calc_age
 
 router = APIRouter(prefix="/api")
 
@@ -18,11 +19,13 @@ router = APIRouter(prefix="/api")
 @router.post("/signup")
 async def signup(payload: dict, db: Session = Depends(get_db)):
     """Create a new user account. Fields: first_name, last_name,
-    national_code (required, 10 digits), phone_number (11 digits)."""
+    national_code (required), phone_number, email (optional).
+    Sex/birth date come from the questionnaire (A4/A5), not signup."""
     first_name = (payload.get("first_name") or "").strip()
     last_name = (payload.get("last_name") or "").strip()
     national_code = (payload.get("national_code") or "").strip()
     phone_number = (payload.get("phone_number") or "").strip()
+    email = (payload.get("email") or "").strip()
 
     if not national_code:
         return {"error": "کد ملی الزامی است"}
@@ -30,6 +33,8 @@ async def signup(payload: dict, db: Session = Depends(get_db)):
         return {"error": "کد ملی باید ۱۰ رقم باشد"}
     if phone_number and not re.fullmatch(r"09\d{9}", phone_number):
         return {"error": "شماره تماس باید با ۰۹ شروع شده و ۱۱ رقم باشد"}
+    if email and not re.fullmatch(r"[^@]+@[^@]+\.[^@]+", email):
+        return {"error": "ایمیل نامعتبر است"}
 
     existing = db.query(models.User).filter(
         models.User.national_code == national_code
@@ -42,6 +47,7 @@ async def signup(payload: dict, db: Session = Depends(get_db)):
         last_name=last_name or None,
         national_code=national_code,
         phone_number=phone_number or None,
+        email=email or None,
         role=1,
     )
     db.add(user)
@@ -56,6 +62,9 @@ async def signup(payload: dict, db: Session = Depends(get_db)):
             "last_name": user.last_name,
             "national_code": user.national_code,
             "phone_number": user.phone_number,
+            "email": user.email,
+            "sex": user.sex,
+            "birth_date": gregorian_to_shamsi_str(user.birth_date) if user.birth_date else None,
             "role": user.role,
         },
     }
@@ -82,6 +91,9 @@ async def login(payload: dict, db: Session = Depends(get_db)):
             "last_name": user.last_name,
             "national_code": user.national_code,
             "phone_number": user.phone_number,
+            "email": user.email,
+            "sex": user.sex,
+            "birth_date": gregorian_to_shamsi_str(user.birth_date) if user.birth_date else None,
             "role": user.role,
         },
     }
@@ -106,6 +118,10 @@ async def dashboard(user_id: str, db: Session = Depends(get_db)):
             "last_name": user.last_name,
             "national_code": user.national_code,
             "phone_number": user.phone_number,
+            "email": user.email,
+            "sex": user.sex,
+            "birth_date": gregorian_to_shamsi_str(user.birth_date) if user.birth_date else None,
+            "age": calc_age(user.birth_date),
             "role": user.role,
         }
     }
@@ -153,54 +169,62 @@ async def dashboard(user_id: str, db: Session = Depends(get_db)):
             .all()
         )
 
-        forms = {f.form_id: f for f in db.query(models.Form).all()}
+        forms = {
+            f.form_id: f
+            for f in db.query(models.Form).order_by(models.Form.sort_order, models.Form.form_id).all()
+        }
 
         completed_count = 0
         draft_count = 0
         submissions_list = []
+        from app.services.forms import get_form_completion
         for sub in submissions:
             form = forms.get(sub.form_id)
-            response_count = db.query(models.Response).filter(
-                models.Response.submission_id == sub.submission_id
-            ).count()
-
-            # Count total questions in this form (across all sections)
-            total_questions = db.query(func.count(models.Question.question_id)).join(
-                models.Section,
-                models.Question.section_id == models.Section.section_id,
-            ).filter(
-                models.Section.form_id == sub.form_id
-            ).scalar() or 0
+            # Strict per-form completion: only applicable *required* questions
+            # count — conditionally hidden questions are excluded and "N/A"
+            # counts as answered. Keeps تعداد پاسخ truthful.
+            comp = get_form_completion(db, uid, sub.form_id)
 
             submissions_list.append({
                 "submission_id": str(sub.submission_id),
+                "form_id": str(sub.form_id),
                 "form_name": form.form_name if form else "نامشخص",
                 "status": sub.status,
                 "created_at": sub.created_at.isoformat() if sub.created_at else None,
                 "updated_at": sub.updated_at.isoformat() if sub.updated_at else None,
-                "response_count": response_count,
-                "total_questions": total_questions,
+                "fully_completed": comp["fully_completed"],
             })
             if sub.status == "completed":
                 completed_count += 1
             else:
                 draft_count += 1
 
-        # Forms open to fill (forms the user hasn't started yet)
+        # Forms open to fill (forms the user hasn't started yet), in sequence
+        # order. Forms whose predecessors aren't fully completed are locked.
+        from app.services.forms import locked_by_earlier_forms, fully_completed_form_count
         open_forms = []
         for f_id, f in forms.items():
-            if not any(str(s.form_id) == str(f_id) for s in submissions):
-                open_forms.append({
-                    "form_id": str(f.form_id),
-                    "form_name": f.form_name,
-                    "category": f.category,
-                })
+            if any(str(s.form_id) == str(f_id) for s in submissions):
+                continue
+            blocked = locked_by_earlier_forms(db, uid, f_id)
+            open_forms.append({
+                "form_id": str(f.form_id),
+                "form_name": f.form_name,
+                "category": f.category,
+                "locked": bool(blocked),
+                "lock_reason": (
+                    "ابتدا باید فرم «" + " و ".join(b.form_name for b in blocked) + "» را کامل کنید"
+                    if blocked else None
+                ),
+            })
 
         data["dashboard_type"] = "user"
         data["stats"] = {
             "total_submissions": len(submissions),
             "completed_submissions": completed_count,
             "draft_submissions": draft_count,
+            "total_forms": len(forms),
+            "fully_completed_forms": fully_completed_form_count(db, uid),
         }
         data["submissions"] = submissions_list
         data["open_forms"] = open_forms

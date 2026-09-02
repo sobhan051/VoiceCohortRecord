@@ -1,6 +1,22 @@
-- [ ] Update Qestions texts
-- [ ] Reduce the number of Questions in chronic disease section
-- [x] Find proxy for Gemini (WebShare)
-- [ ] Fix(finetune) audio processing configs if needed 
-- [ ] change the bitrate to 64K if needed 
+- [x] Update Qestions texts
+- [x] Reduce the number of Questions in chronic disease section
+- [x] Find proxy for Gemini (WebShare) 
 - [x] pill names more than one fix (داروهای مصرفی)
+- [x] Fix group pair sort_order
+- [x] Fix counter of the visible rule questions 
+- [x] make the question text applicable as static   
+- [x] order forms 
+- [x] health auto check UI fixed(untested)(only need to do is_required questions -> make the all required??)
+- [x] convert income source into one multi select q
+- [x] Make med history as one multi select q +  هیچ کدام option 
+- [x] Add q "do you use any meds/pills" At top with visibility and conditional
+- [x] delete "lab", others sections from db
+- [x] go to dashboard after submission 
+- [x] ask for age instead of birthdate
+- [X] visibility_check between forms
+- [X] make export section in admin dashboard
+- [x] test vitamin pills tracker
+- [ ] fix Sanity check is doing Advice? we need it just to check to make sure the user said the right answer. 
+- [ ] get the fonts and other stuff for UI offline
+- [ ] هیچکدام option should disable the other options (small bug)
+- [x] only 1 question and then submitting would make the whole section تکمیل شد

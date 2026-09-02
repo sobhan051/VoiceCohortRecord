@@ -4,15 +4,14 @@ let mediaRecorder;
 let audioChunks = [];
 let recordingStates = {};
 let activeRecordingSection = null;
-let audioContext = null;
-let analyserNode = null;
-let silenceDetectionActive = false;
-
-const SILENCE_THRESHOLD = 0.01;
-const SILENCE_DURATION_MS = 3500;
-const MIN_RECORDING_MS = 3000;
-let silenceStartTime = null;
+// let audioContext = null;
+// let analyserNode = null;
+// let silenceDetectionActive = false;
+// const SILENCE_THRESHOLD = 0.01;
+// const SILENCE_DURATION_MS = 3500;
+// let silenceStartTime = null;
 let recordingStartTime = null;
+const MIN_RECORDING_MS = 3000;
 
 let sessionContext = {};           // { v_code: value }
 let sessionConfidence = {};        // { v_code: 0..1 } – AI confidence per field
@@ -20,29 +19,219 @@ let sessionConfidenceReasons = {}; // { v_code: reason } – why confidence is b
 let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value } }
 let fieldWarnings = {};           // { v_code: [ { message, severity } ] }
 let currentSubmissionId = null;   // set once a patient/submission is started
+let questionRulesMap = {};        // { v_code: {logic, rules} } – question dependency rules (visibility_rules)
 let lastAudioBySection = {};      // { section_key: Blob } – kept so a failed send can be retried without re-recording
 let sectionProgressData = {};     // { section_key: { name_fa, total, answered } } – for the progress panel
+let adminViewMode = false;
+let adminSubmissionId = null;
+let adminFormName = '';
 
 document.addEventListener('DOMContentLoaded', async () => {
+    const urlParams = new URLSearchParams(window.location.search);
+    adminViewMode = urlParams.get('admin_view') === 'true';
+    adminSubmissionId = urlParams.get('submission_id');
+    // Render from the URL param ONLY. localStorage may hold a stale form id
+    // from an older visit (it is never refreshed on reorder), which would
+    // render a different form than the one the dashboard link pointed to.
+    const selectedFormId = urlParams.get('form_id') || '';
+
     try {
-        // Pass form_id — prefer URL param, fall back to localStorage
-        const urlParams = new URLSearchParams(window.location.search);
-        const selectedFormId = urlParams.get('form_id') || localStorage.getItem('selected_form_id') || '';
-        // Persist to localStorage so start-submission can use it too
-        if (selectedFormId) localStorage.setItem('selected_form_id', selectedFormId);
         const url = selectedFormId ? `/get-form-structure?form_id=${selectedFormId}` : '/get-form-structure';
         const res = await fetch(url);
-        const sections = await res.json();
-        renderForm(sections);
+        const data = await res.json();
+
+        if (data && data.form_name && data.sections) {
+            adminFormName = data.form_name;
+            updateProgressPanelTitle(adminFormName);
+            renderForm(data.sections);
+        } else {
+            renderForm(Array.isArray(data) ? data : []);
+        }
         updateQuestionVisibility();
     } catch (err) {
         console.error("Failed to load form structure:", err);
         document.getElementById('form-container').innerHTML =
             `<div class="bg-red-50 text-red-600 p-4 rounded-xl border border-red-200">خطا در دریافت اطلاعات از سرور. لطفا اتصال دیتابیس را بررسی کنید.</div>`;
     }
-    // Auto-start from dashboard session
-    autoStartFromSession();
+
+    if (adminViewMode && adminSubmissionId) {
+        await loadAdminSubmissionData(adminSubmissionId);
+    } else {
+        autoStartFromSession();
+    }
 });
+
+function updateProgressPanelTitle(formName) {
+    const titleEl = document.getElementById('progress-panel-title');
+    if (titleEl) {
+        titleEl.textContent = formName;
+        titleEl.style.fontSize = '1.1rem';
+        titleEl.style.fontWeight = '700';
+        titleEl.style.color = '#1e40af';
+    }
+}
+
+async function loadAdminSubmissionData(submissionId) {
+    try {
+        const res = await fetch(`/api/admin/submission/${submissionId}`);
+        const data = await res.json();
+        if (data.error) {
+            showToast('خطا در بارگذاری اطلاعات: ' + data.error);
+            return;
+        }
+
+        currentSubmissionId = submissionId;
+
+        document.getElementById('pt-first').value = data.user?.first_name || '';
+        document.getElementById('pt-last').value = data.user?.last_name || '';
+        document.getElementById('pt-national').value = data.user?.national_code || '';
+        document.getElementById('pt-phone').value = data.user?.phone_number || '';
+        document.getElementById('patient-card').classList.remove('hidden');
+
+        const userBadge = document.getElementById('patient-card-badge');
+        if (userBadge) {
+            userBadge.innerHTML = `<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg> مشاهده توسط مدیر`;
+        }
+
+        if (data.responses && data.responses.length > 0) {
+            const answers = {};
+            const confidence = {};
+            data.responses.forEach(resp => {
+                if (resp.extracted_value) {
+                    answers[resp.v_code] = resp.extracted_value;
+                }
+                if (resp.ai_confidence) {
+                    confidence[resp.v_code] = resp.ai_confidence;
+                }
+            });
+
+            Object.entries(answers).forEach(([vcode, val]) => {
+                if (val !== null && val !== undefined) sessionContext[vcode] = String(val);
+            });
+            Object.entries(confidence).forEach(([vcode, conf]) => {
+                if (conf !== null && conf !== undefined) sessionConfidence[vcode] = conf;
+            });
+
+            applyAiResults(answers);
+        }
+
+        // Cross-form answers: parent fields that live in another form the
+        // user already submitted. Required for visibility_rules /
+        // deactive_options on the current form to evaluate against parents
+        // recorded elsewhere (e.g. A4 gender in form 1 -> disable option 19
+        // of K1 in form 2).
+        if (data.cross_form_answers) {
+            Object.entries(data.cross_form_answers).forEach(([vcode, val]) => {
+                if (val === null || val === undefined || val === '') return;
+                if (sessionContext[vcode] === undefined) {
+                    sessionContext[vcode] = String(val);
+                }
+            });
+        }
+
+        updateQuestionVisibility();
+
+        document.getElementById('status-badge').textContent = data.status === 'completed' ? 'تکمیل شده' : 'پیش‌نویس';
+
+        makeFormReadOnly();
+        setupAdminViewButtons();
+
+        updateProgressPanel();
+    } catch (err) {
+        console.error('Failed to load admin submission data:', err);
+        showToast('خطا در بارگذاری اطلاعات پاسخ‌ها');
+    }
+}
+
+function makeFormReadOnly() {
+    document.querySelectorAll('input[data-vcode], select[data-vcode], textarea[data-vcode]').forEach(input => {
+        input.readOnly = true;
+        input.disabled = true;
+        input.classList.add('bg-gray-100');
+    });
+    document.querySelectorAll('section[id^="sect-"] button[id^="btn-"]').forEach(btn => {
+        btn.style.display = 'none';
+    });
+}
+
+function setupAdminViewButtons() {
+    const submitBtn = document.getElementById('panel-submit-btn');
+    if (!submitBtn) return;
+
+    const footer = submitBtn.parentElement;
+    footer.innerHTML = `
+        <div class="flex flex-col gap-3 w-full">
+            <button type="button" onclick="runAdminFormCheck()"
+                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-xl transition-all text-sm shadow-sm">
+                <span class="flex items-center justify-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+                    </svg>
+                    بررسی فرم
+                </span>
+            </button>
+            <button type="button" onclick="window.location.href='/dashboard?section=submissions'"
+                    class="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-3 px-4 rounded-xl transition-all text-sm">
+                <span class="flex items-center justify-center gap-2">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+                    </svg>
+                    بازگشت به لیست پرسشنامه‌ها
+                </span>
+            </button>
+        </div>`;
+}
+
+async function runAdminFormCheck() {
+    const footer = document.querySelector('#progress-panel .panel-footer');
+    const btn = document.querySelector('#progress-panel .panel-footer button');
+    if (!btn) return;
+
+    const originalHTML = btn.innerHTML;
+    btn.innerHTML = `<span class="flex items-center justify-center gap-2"><svg class="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> در حال بررسی...</span>`;
+    btn.disabled = true;
+
+    try {
+        const res = await fetch('/check-final-anomalies', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                submission_id: currentSubmissionId,
+                answers: sessionContext,
+                confidence_reasons: sessionConfidenceReasons,
+            })
+        });
+        const data = await res.json();
+        const warnings = (!data.error && data.warnings) ? data.warnings : [];
+
+        fieldWarnings = {};
+        warnings.forEach(w => {
+            if (!fieldWarnings[w.v_code]) fieldWarnings[w.v_code] = [];
+            fieldWarnings[w.v_code].push({
+                message: w.message,
+                severity: w.severity || 'warning'
+            });
+        });
+
+        applyFieldWarnings();
+        updateSectionBadges();
+        updateWarningPanel();
+
+        if (warnings.length > 0) {
+            const list = document.getElementById('warning-list');
+            if (list) list.classList.add('active');
+            showToast(`${warnings.length} مورد یافت شد`);
+        } else {
+            showToast('موردی یافت نشد - فرم صحیح است');
+        }
+    } catch (err) {
+        console.error('Admin form check failed:', err);
+        showToast('خطا در بررسی فرم');
+    } finally {
+        btn.innerHTML = originalHTML;
+        btn.disabled = false;
+    }
+}
 
 // Add this helper function at the top
 function getBestAudioMimeType() {
@@ -76,7 +265,7 @@ function getBestAudioMimeType() {
     
     for (const mt of mimeTypes) {
         if (MediaRecorder.isTypeSupported(mt.mime)) {
-            console.log(`✅ Using format: ${mt.mime} (${mt.codec} @ ${mt.bitrate ? mt.bitrate/1000 + 'kbps' : 'uncompressed'})`);
+            console.log(`Using format: ${mt.mime} (${mt.codec} @ ${mt.bitrate ? mt.bitrate/1000 + 'kbps' : 'uncompressed'})`);
             return mt;
         }
     }
@@ -127,10 +316,9 @@ async function autoStartFromSession() {
 
     // Auto-start submission using the user_id from session
     try {
-        // Include form_id if stored (from dashboard form selection)
-        const selectedFormId = localStorage.getItem('selected_form_id') || null;
+        const urlFormId = new URLSearchParams(window.location.search).get('form_id');
         const body = { user_id: userData.user_id };
-        if (selectedFormId) body.form_id = selectedFormId;
+        if (urlFormId) body.form_id = urlFormId;
         const res = await fetch('/start-submission', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -140,6 +328,15 @@ async function autoStartFromSession() {
         if (data.error) {
             errEl.textContent = data.error;
             errEl.classList.remove('hidden');
+            // Make the failure impossible to miss (e.g. form locked by the
+            // sequence gate) and prevent the misleading "session not started"
+            // alert on submit: toast + disabled final-submit button.
+            showToast(data.error);
+            const submitBtn = document.getElementById('panel-submit-btn');
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.title = data.error;
+            }
             return;
         }
 
@@ -161,7 +358,9 @@ async function autoStartFromSession() {
 }
 
 // ---------- Progressive resume ----------
-// Prefill answers saved on a previous visit and mark answered sections "done".
+// Prefill answers saved on a previous visit. Section done-badges are synced
+// strictly by updateProgressPanel -> updateSectionDoneBadges (all questions
+// answered), NOT by "this section has any saved answer".
 function loadExistingProgress(data) {
     const answers = data.answers || {};
     const confidence = data.confidence || {};
@@ -181,16 +380,13 @@ function loadExistingProgress(data) {
         updateQuestionVisibility();
     }
 
-    answeredSections.forEach(markSectionAnswered);
-
     if (answeredSections.length > 0) {
         document.getElementById('status-badge').textContent =
-            `ادامه پرسشنامه (${answeredSections.length} بخش تکمیل‌شده)`;
+            `ادامه پرسشنامه (${answeredSections.length} بخش دارای پاسخ)`;
     }
 }
 
-// Visually flag a section the patient already completed. The mic stays enabled
-// so they can re-record to correct an answer.
+// Visually flag a section whose questions are ALL answered.
 function markSectionAnswered(sectionKey) {
     const sectionEl = document.getElementById(`sect-${sectionKey}`);
     if (!sectionEl) return;
@@ -198,9 +394,31 @@ function markSectionAnswered(sectionKey) {
 
     const badge = document.getElementById(`badge-${sectionKey}`);
     if (badge && !badge.classList.contains('active')) {
-        badge.textContent = '✓ تکمیل شد';
+        badge.innerHTML = '<span class="inline-flex items-center gap-1"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg> تکمیل شد</span>';
         badge.classList.add('section-done-badge');
     }
+}
+
+// Sync the "تکمیل شد" badges with the strict per-section progress counts —
+// a section with ANY unanswered question must NOT show as done, even if the
+// user partially filled it and clicked ثبت و خروج earlier. Called from
+// updateProgressPanel so the badges stay truthful on every answer change.
+function updateSectionDoneBadges() {
+    document.querySelectorAll('section[id^="sect-"]').forEach(sectionEl => {
+        const sectionKey = sectionEl.id.replace('sect-', '');
+        const data = sectionProgressData[sectionKey];
+        const complete = !!(data && data.total > 0 && data.answered >= data.total);
+        const badge = document.getElementById(`badge-${sectionKey}`);
+        if (complete) {
+            markSectionAnswered(sectionKey);
+        } else {
+            sectionEl.classList.remove('section-answered');
+            if (badge && badge.classList.contains('section-done-badge')) {
+                badge.classList.remove('section-done-badge');
+                badge.innerHTML = '';
+            }
+        }
+    });
 }
 
 // ---------- Floating Stop Button & Volume Meter ----------
@@ -241,6 +459,260 @@ function updateQuestionVisibility() {
         sectionEl.style.display = sectionShouldShow ? '' : 'none';
         sectionEl.style.opacity = sectionShouldShow ? '1' : '0';
     });
+
+    // Question-level dependency rules (questions.visibility_rules JSONB)
+    applyQuestionRulesVisibility();
+}
+
+// ---------- Question-Level Dependency Rules (visibility_rules JSONB) ----------
+// Each rule may carry `deactive_options`: when the rule's parent answer
+// matches, the listed option codes of the current question are disabled.
+function normalizeRules(raw) {
+    if (!raw) return null;
+    let rules = raw;
+    if (typeof rules === 'string') {
+        try { rules = JSON.parse(rules); } catch (e) { return null; }
+    }
+    if (!rules || typeof rules !== 'object' || !Array.isArray(rules.rules)) return null;
+    const clean = rules.rules
+        .filter(r => r && r.v_code && Array.isArray(r.values) && r.values.length > 0)
+        .map(r => {
+            const rule = { v_code: String(r.v_code), values: r.values.map(String) };
+            if (Array.isArray(r.deactive_options) && r.deactive_options.length > 0) {
+                rule.deactive_options = r.deactive_options.map(String);
+            }
+            return rule;
+        });
+    if (clean.length === 0) return null;
+    return { logic: rules.logic === 'any' ? 'any' : 'all', rules: clean };
+}
+
+// Effective answer for a parent v_code — collapses grouped BASE_0/BASE_1
+// entries into one comma-joined value (multi-select semantics).
+function getEffectiveAnswer(vcode) {
+    const direct = sessionContext[vcode];
+    if (direct !== undefined && direct !== null && direct !== '') return String(direct);
+    const entries = [];
+    Object.entries(sessionContext).forEach(([key, val]) => {
+        const m = key.match(/^(.+?)_(\d+)$/);
+        if (m && m[1] === vcode && val !== undefined && val !== null && val !== '') {
+            entries.push([parseInt(m[2]), String(val)]);
+        }
+    });
+    if (entries.length === 0) return null;
+    entries.sort((a, b) => a[0] - b[0]);
+    return entries.map(e => e[1]).join(',');
+}
+
+// Mirror of app/services/visibility.py — keep the two in sync.
+// Tri-state evaluation: 'applicable' (dependency met), 'na' (dependency
+// explicitly failed — a parent was ANSWERED with a non-qualifying value), or
+// 'pending' (a parent hasn't been answered yet). The pending state is what
+// keeps the progress bar from counting the question before its dependency is
+// actually resolved by an answer.
+function getQuestionRuleState(vcode) {
+    const rules = questionRulesMap[vcode];
+    if (!rules) return 'applicable';
+    const results = rules.rules.map(rule => {
+        let parentValue = getEffectiveAnswer(rule.v_code);
+        if (parentValue === null || parentValue === undefined) return 'pending';
+        parentValue = String(parentValue).trim();
+        if (parentValue === '') return 'pending';
+        if (parentValue.toUpperCase() === 'N/A') return 'fail';
+        const allowed = rule.values.map(String);
+        if (parentValue.includes(',')) {
+            const selected = parentValue.split(',').map(v => v.trim()).filter(Boolean);
+            return selected.some(v => allowed.includes(v)) ? 'pass' : 'fail';
+        }
+        return allowed.includes(parentValue) ? 'pass' : 'fail';
+    });
+    if (rules.logic === 'any') {
+        if (results.includes('pass')) return 'applicable';
+        if (results.includes('pending')) return 'pending';
+        return 'na';
+    }
+    // logic "all"
+    if (results.includes('pending')) return 'pending';
+    return results.every(r => r === 'pass') ? 'applicable' : 'na';
+}
+
+// Returns the list of option codes that should be deactivated on the
+// question owning these rules. Each rule may carry a `deactive_options`
+// list — when that rule's parent answer matches, those option codes
+// become unavailable (greyed out + uncheckable) on the current question.
+function getDeactiveOptionsFor(vcode) {
+    const rules = questionRulesMap[vcode];
+    if (!rules) return [];
+    const out = [];
+    const seen = new Set();
+    rules.rules.forEach(rule => {
+        if (!Array.isArray(rule.deactive_options) || rule.deactive_options.length === 0) return;
+        const state = evaluateRuleState(rule);
+        if (state !== 'pass') return;
+        rule.deactive_options.forEach(opt => {
+            const k = String(opt);
+            if (!seen.has(k)) {
+                seen.add(k);
+                out.push(k);
+            }
+        });
+    });
+    return out;
+}
+
+// Evaluate a single rule's parent match state without computing the full
+// question tri-state ('pass' | 'fail' | 'pending').
+function evaluateRuleState(rule) {
+    let parentValue = getEffectiveAnswer(rule.v_code);
+    if (parentValue === null || parentValue === undefined) return 'pending';
+    parentValue = String(parentValue).trim();
+    if (parentValue === '') return 'pending';
+    if (parentValue.toUpperCase() === 'N/A') return 'fail';
+    const allowed = rule.values.map(String);
+    if (parentValue.includes(',')) {
+        const selected = parentValue.split(',').map(v => v.trim()).filter(Boolean);
+        return selected.some(v => allowed.includes(v)) ? 'pass' : 'fail';
+    }
+    return allowed.includes(parentValue) ? 'pass' : 'fail';
+}
+
+// Wrapper around JUST the control (options row / input box) — dimming for
+// non-applicable/pending questions must never touch the question text, which
+// stays fully readable (full opacity) while the field worker records.
+function getControlWrapper(input) {
+    if (input.type === 'radio' || input.type === 'checkbox') {
+        return input.closest('.flex.flex-wrap') || input.closest('label') || input.parentElement;
+    }
+    return input.closest('.relative') || input.parentElement;
+}
+
+// Disable + clear + tag «غیرمرتبط» on every question whose dependency is not
+// met, and restore fields whose dependency becomes satisfied. Runs inside
+// updateQuestionVisibility() so it re-evaluates on every answer change.
+// NOTE: only the controls (options/inputs) are dimmed — the question text is
+// never greyed out or lightened.
+function applyQuestionRulesVisibility() {
+    Object.keys(questionRulesMap).forEach(vcode => {
+        const state = getQuestionRuleState(vcode);
+
+        // Every rendered input of this question: plain v_code + grouped BASE_N
+        const inputs = Array.from(document.querySelectorAll('[data-vcode]'))
+            .filter(inp => inp.dataset.vcode === vcode ||
+                (inp.dataset.vcode + '_').startsWith(vcode + '_'));
+
+        const isGrouped = Object.values(groupedQuestionsMap).some(qs =>
+            qs.some(q => q.v_code === vcode));
+
+        if (state === 'na') {
+            inputs.forEach(input => {
+                if (input.type === 'radio' || input.type === 'checkbox') {
+                    input.checked = false;
+                } else {
+                    if (input.dataset.origPlaceholder === undefined) {
+                        input.dataset.origPlaceholder = input.placeholder || '';
+                    }
+                    input.value = '';
+                    input.placeholder = 'غیرمرتبط';
+                }
+                input.disabled = true;
+                input.dataset.na = '1';
+                const control = getControlWrapper(input);
+                if (control) control.classList.add('opacity-50');
+            });
+            if (isGrouped) {
+                Object.keys(sessionContext).forEach(k => {
+                    const m = k.match(/^(.+?)_(\d+)$/);
+                    if (m && m[1] === vcode) sessionContext[k] = 'N/A';
+                });
+            } else {
+                sessionContext[vcode] = 'N/A';
+            }
+        } else {
+            // 'applicable' → enabled; 'pending' → disabled + dimmed but NOT
+            // N/A-marked, so the progress bar doesn't count it until its
+            // dependency is resolved by answering the parent.
+            inputs.forEach(input => {
+                input.disabled = state === 'pending';
+                delete input.dataset.na;
+                if (input.type !== 'radio' && input.type !== 'checkbox' &&
+                    state === 'applicable' && input.dataset.origPlaceholder !== undefined) {
+                    input.placeholder = input.dataset.origPlaceholder;
+                }
+                const control = getControlWrapper(input);
+                if (control) control.classList.toggle('opacity-50', state === 'pending');
+            });
+            // Drop any auto "N/A" state (e.g. the parent was cleared again)
+            Object.keys(sessionContext).forEach(k => {
+                const m = k.match(/^(.+?)_(\d+)$/);
+                if ((k === vcode || (m && m[1] === vcode)) &&
+                    String(sessionContext[k]).toUpperCase() === 'N/A') {
+                    delete sessionContext[k];
+                }
+            });
+        }
+
+        // «غیرمرتبط» badge(s) — only when the dependency is explicitly false
+        const badges = [];
+        const plainBadge = document.getElementById(`na-badge-${vcode}`);
+        if (plainBadge) badges.push(plainBadge);
+        document.querySelectorAll(`[id^="na-badge-${vcode}_"]`).forEach(b => badges.push(b));
+        badges.forEach(b => { b.style.display = state === 'na' ? 'inline-block' : 'none'; });
+
+        // Per-rule deactive_options: grey out + uncheck option codes whose
+        // parent rule currently passes. Independent of the question's overall
+        // tri-state, so it works for both applicable and na states.
+        applyDeactiveOptionsFor(vcode);
+    });
+}
+
+// Per-question option-level deactivation. Scoped to radio / checkbox inputs
+// (the only response types that have option codes). When a rule lists
+// deactive_options and the parent answer matches, the matching option cards
+// become unselectable, the input is unchecked, and the label is dimmed.
+function applyDeactiveOptionsFor(vcode) {
+    const deactive = getDeactiveOptionsFor(vcode);
+    if (deactive.length === 0) {
+        // Re-enable any previously-deactivated option for this question
+        const prev = document.querySelectorAll('input[type="radio"][data-vcode="' + vcode + '"][data-deactive="1"], input[type="checkbox"][data-vcode="' + vcode + '"][data-deactive="1"]');
+        prev.forEach(inp => {
+            inp.disabled = !!inp.dataset.na;
+            delete inp.dataset.deactive;
+            const label = inp.closest('label');
+            if (label) {
+                label.classList.remove('opacity-40', 'pointer-events-none', 'cursor-not-allowed');
+                label.title = '';
+            }
+        });
+        return;
+    }
+    const deactiveSet = new Set(deactive.map(String));
+    const selector = [
+        'input[type="radio"][data-vcode="' + vcode + '"]',
+        'input[type="checkbox"][data-vcode="' + vcode + '"]',
+    ].join(',');
+    const inputs = Array.from(document.querySelectorAll(selector));
+    inputs.forEach(inp => {
+        const label = inp.closest('label');
+        if (deactiveSet.has(String(inp.value))) {
+            if (inp.checked) inp.checked = false;
+            inp.disabled = true;
+            inp.dataset.deactive = '1';
+            if (label) {
+                label.classList.add('opacity-40', 'pointer-events-none', 'cursor-not-allowed');
+                label.title = 'این گزینه توسط قوانین فرم غیرفعال شده است';
+            }
+        } else {
+            // Only re-enable if the option is NOT also N/A-tagged by visibility
+            if (inp.dataset.deactive === '1') {
+                inp.disabled = !!inp.dataset.na;
+                delete inp.dataset.deactive;
+                if (label) {
+                    label.classList.remove('opacity-40', 'pointer-events-none', 'cursor-not-allowed');
+                    label.title = '';
+                }
+            }
+        }
+    });
 }
 
 // ---------- Rendering ----------
@@ -278,7 +750,7 @@ function renderGroupContainer(groupPair) {
         <div class="md:col-span-2 group-container" id="group-${groupPair}" data-group-pair="${groupPair}">
             <div class="bg-blue-50 border-2 border-blue-100 rounded-2xl p-4 space-y-4">
                 <div class="flex items-center justify-between mb-2">
-                    <h3 class="text-sm font-bold text-blue-700">${label} — گروه تکراری</h3>
+                    <h3 class="text-sm font-bold text-blue-700">${label}</h3>
                     <span class="text-xs text-blue-500 bg-blue-100 px-2 py-1 rounded-full" id="group-count-${groupPair}">${count} ردیف</span>
                 </div>
                 <div id="group-entries-${groupPair}" class="space-y-4">
@@ -389,6 +861,11 @@ function collectGroupedAnswers() {
         entry.querySelectorAll('[data-vcode]').forEach(inp => {
             const rawVcode = inp.dataset.vcode;
             if (rawVcode && /_\d+$/.test(rawVcode)) {
+                // N/A-tagged (dependency not met) fields keep their "N/A" state
+                if (inp.dataset.na === '1') return;
+                // Pending (dependency not yet resolved) fields stay disabled
+                // and untouched — don't overwrite their state
+                if (inp.disabled) return;
                 if (inp.type === 'radio') {
                     if (inp.checked) sessionContext[rawVcode] = inp.value;
                 } else if (inp.type === 'checkbox') {
@@ -433,7 +910,7 @@ function applyGroupedAiResults(data) {
         }
     });
 
-    // Second pass: fill in the values
+    // Second pass: fill in the values — only for grouped questions
     Object.entries(data).forEach(([vcode, val]) => {
         if (val === null || val === undefined || val === '') return;
         let baseVcode = vcode;
@@ -443,15 +920,23 @@ function applyGroupedAiResults(data) {
             baseVcode = match[1];
             idx = parseInt(match[2]);
         }
-        // If plain vcode belongs to a group, map to idx=0
+        // Check if this vcode belongs to a grouped question; skip non-grouped
+        let isGrouped = false;
         let targetVcode = vcode;
         for (const [gp, questions] of Object.entries(groupedQuestionsMap)) {
             if (questions.some(q => q.v_code === baseVcode)) {
+                isGrouped = true;
                 if (!match) targetVcode = baseVcode + '_0';
                 break;
             }
         }
+        if (!isGrouped) return;
         const inputs = document.querySelectorAll(`[data-vcode="${targetVcode}"]`);
+        const isCheckboxGroup = inputs.length > 0 && inputs[0].type === 'checkbox';
+        let checkSet = null;
+        if (isCheckboxGroup) {
+            checkSet = new Set(String(val).split(',').map(c => c.trim()).filter(Boolean));
+        }
         inputs.forEach(input => {
             if (input.type === 'radio') {
                 if (input.value == val) {
@@ -459,12 +944,22 @@ function applyGroupedAiResults(data) {
                     const lbl = input.closest('label');
                     if (lbl) lbl.classList.add('ai-updated');
                     setTimeout(() => { if (lbl) lbl.classList.remove('ai-updated'); }, 3000);
+                } else {
+                    input.checked = false;
                 }
             } else if (input.type === 'checkbox') {
-                // Not expected for grouped, but handle anyway
-                input.checked = true;
-                input.classList.add('ai-updated');
-                setTimeout(() => input.classList.remove('ai-updated'), 3000);
+                const shouldCheck = checkSet ? checkSet.has(String(input.value)) : String(input.value) === String(val).trim();
+                input.checked = shouldCheck;
+                if (shouldCheck) {
+                    input.classList.add('ai-updated');
+                    const lbl = input.closest('label');
+                    if (lbl) lbl.classList.add('ai-updated');
+                }
+                setTimeout(() => {
+                    input.classList.remove('ai-updated');
+                    const lbl = input.closest('label');
+                    if (lbl) lbl.classList.remove('ai-updated');
+                }, 3000);
             } else {
                 input.value = String(val);
                 input.classList.add('ai-updated');
@@ -519,8 +1014,42 @@ function renderForm(sections) {
             answered: 0
         };
 
-        // Now remove grouped questions from rendering (already counted above)
-        section.questions = (section.questions || []).filter(q => !q.group_pair);
+        // Collect question-level dependency rules (before the grouped filter)
+        (section.questions || []).forEach(q => {
+            const rules = normalizeRules(q.visibility_rules);
+            if (rules) questionRulesMap[q.v_code] = rules;
+        });
+
+        // Place each group container at the sort_order position of its first
+        // question, so groups keep their place inside the section instead of
+        // always jumping to the top. Members of the group render inside the
+        // container as back-to-back rows in sort order.
+        const fullQuestions = section.questions || [];
+        const sectionGroups = Object.keys(groupedQuestionsMap)
+            .filter(gp => groupedQuestionsSections[gp] === section.section_key);
+        const groupFirstVcode = {};
+        sectionGroups.forEach(gp => {
+            const first = fullQuestions.find(q => q.group_pair === gp);
+            if (first) groupFirstVcode[gp] = first.v_code;
+        });
+        const renderedGroups = new Set();
+        let bodyHtml = fullQuestions.map(q => {
+            if (q.group_pair) {
+                if (groupFirstVcode[q.group_pair] === q.v_code) {
+                    renderedGroups.add(q.group_pair);
+                    return renderGroupContainer(q.group_pair);
+                }
+                return ''; // later members of the group render inside its rows
+            }
+            return renderQuestion(q);
+        }).join('');
+        // Safety net: a group whose first question wasn't matched still renders
+        bodyHtml += sectionGroups
+            .filter(gp => !renderedGroups.has(gp))
+            .map(gp => renderGroupContainer(gp)).join('');
+
+        // Non-grouped questions only (for anything else that uses the list)
+        section.questions = fullQuestions.filter(q => !q.group_pair);
 
         const sectHtml = `
             <section class="bg-white p-6 md:p-8 rounded-3xl shadow-sm border border-gray-100"
@@ -542,8 +1071,7 @@ function renderForm(sections) {
                     </button>
                 </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
-                    ${Object.keys(groupedQuestionsMap).filter(gp => groupedQuestionsSections[gp] === section.section_key).map(gp => renderGroupContainer(gp)).join('')}
-                    ${section.questions.map(q => renderQuestion(q)).join('')}
+                    ${bodyHtml}
                 </div>
             </section>
         `;
@@ -589,6 +1117,9 @@ function updateProgressPanel() {
                 const vc = q.v_code + '_0';
                 if (countedVcodes.has(vc)) return;
                 countedVcodes.add(vc);
+                // Pending (dependency not yet resolved) grouped fields don't count
+                const input0 = document.querySelector(`[data-vcode="${vc}"]`);
+                if (input0 && input0.disabled && input0.dataset.na !== '1') return;
                 const val = sessionContext[vc];
                 if (val !== undefined && val !== null && val !== '') {
                     answered++;
@@ -662,18 +1193,32 @@ function updateProgressPanel() {
         );
     }
 
-    // Update submit button state
+    // Update submit button state — two visual modes:
+    //   incomplete -> gray "ثبت و خروج" (saves progress, stays draft)
+    //   all answered -> green "ثبت نهایی" (server marks the form completed)
     const submitBtn = document.getElementById('panel-submit-btn');
     if (submitBtn) {
-        submitBtn.disabled = totalAnswered === 0;
-        submitBtn.textContent = totalAnswered === 0 ? 'هیچ پاسخی ثبت نشده' : `ثبت نهایی (${totalAnswered})`;
-        // Re-wrap with icon
-        if (totalAnswered > 0) {
+        const allAnswered = totalQuestions > 0 && totalAnswered >= totalQuestions;
+        if (totalAnswered === 0) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = 'هیچ پاسخی ثبت نشده';
+        } else if (allAnswered) {
+            submitBtn.disabled = false;
+            submitBtn.className = submitBtn.className.replace(/bg-\S+ hover:bg-\S+/g, 'bg-emerald-600 hover:bg-emerald-700');
             submitBtn.innerHTML = `<span class="flex items-center justify-center gap-2">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                 </svg>
                 ثبت نهایی
+            </span>`;
+        } else {
+            submitBtn.disabled = false;
+            submitBtn.className = submitBtn.className.replace(/bg-\S+ hover:bg-\S+/g, 'bg-slate-500 hover:bg-slate-600');
+            submitBtn.innerHTML = `<span class="flex items-center justify-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                </svg>
+                ثبت و خروج (${totalAnswered} از ${totalQuestions})
             </span>`;
         }
     }
@@ -682,13 +1227,17 @@ function updateProgressPanel() {
     const badgeEl = document.getElementById('status-badge');
     if (badgeEl && totalQuestions > 0) {
         if (overallPct === 100) {
-            badgeEl.textContent = '✅ همه بخش‌ها تکمیل شد';
-            badgeEl.className = 'bg-green-50 text-green-600 px-4 py-2 rounded-full text-sm font-medium';
+            badgeEl.innerHTML = '<span class="inline-flex items-center gap-1.5"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> همه بخش‌ها تکمیل شد</span>';
+            badgeEl.className = 'bg-green-50 text-green-600 px-3 sm:px-4 py-2 rounded-full text-xs sm:text-sm font-medium whitespace-nowrap';
         } else {
-            badgeEl.textContent = `📊 ${totalAnswered} از ${totalQuestions}`;
-            badgeEl.className = 'bg-blue-50 text-blue-600 px-4 py-2 rounded-full text-sm font-medium';
+            badgeEl.textContent = `${totalAnswered} از ${totalQuestions}`;
+            badgeEl.className = 'bg-blue-50 text-blue-600 px-3 sm:px-4 py-2 rounded-full text-xs sm:text-sm font-medium whitespace-nowrap';
         }
     }
+
+    // Keep the per-section "تکمیل شد" badges truthful (only fully-answered
+    // sections show the green done state).
+    updateSectionDoneBadges();
 }
 
 function scrollToSection(sectionKey) {
@@ -711,7 +1260,10 @@ function renderQuestion(q) {
         }
         return `
             <div class="md:col-span-2 space-y-3">
-                <label class="block text-gray-700 font-bold">${q.question_text_fa}</label>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <label class="block text-gray-700 font-bold">${q.question_text_fa}</label>
+                    <span id="na-badge-${q.v_code}" style="display:none" class="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full border border-gray-200">غیرمرتبط</span>
+                </div>
                 <div class="flex flex-wrap gap-4">
                     ${Object.entries(options || {}).map(([key, val]) => `
                         <label class="flex items-center gap-3 border-2 border-gray-100 px-4 py-3 rounded-2xl cursor-pointer hover:border-blue-200 hover:bg-blue-50 transition-all">
@@ -730,7 +1282,10 @@ function renderQuestion(q) {
         }
         return `
             <div class="md:col-span-2 space-y-3">
-                <label class="block text-gray-700 font-bold">${q.question_text_fa}</label>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <label class="block text-gray-700 font-bold">${q.question_text_fa}</label>
+                    <span id="na-badge-${q.v_code}" style="display:none" class="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full border border-gray-200">غیرمرتبط</span>
+                </div>
                 <div class="flex flex-wrap gap-4">
                     ${Object.entries(options || {}).map(([key, val]) => `
                         <label class="flex items-center gap-3 border-2 border-gray-100 px-4 py-3 rounded-2xl cursor-pointer hover:border-blue-200 hover:bg-blue-50 transition-all">
@@ -744,7 +1299,10 @@ function renderQuestion(q) {
     }
     return `
         <div class="flex flex-col gap-2 relative">
-            <label class="text-gray-600 text-sm font-medium">${q.question_text_fa}</label>
+            <div class="flex items-center gap-2 flex-wrap">
+                <label class="text-gray-600 text-sm font-medium">${q.question_text_fa}</label>
+                <span id="na-badge-${q.v_code}" style="display:none" class="text-xs bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full border border-gray-200">غیرمرتبط</span>
+            </div>
             <div class="relative">
                 <input type="text" data-vcode="${q.v_code}"
                        class="w-full bg-gray-50 border-2 border-gray-100 rounded-2xl px-4 py-3 outline-none focus:border-blue-500 focus:bg-white transition-all shadow-inner"
@@ -782,7 +1340,7 @@ async function toggleRecording(sectionKey) {
             // Add bitrate for formats that support it
             if (audioFormat.bitrate) {
                 options.audioBitsPerSecond = audioFormat.bitrate;
-                console.log(`🎚️ Setting bitrate: ${audioFormat.bitrate/1000}kbps`);
+                console.log(`Setting bitrate: ${audioFormat.bitrate/1000}kbps`);
             }
             
             mediaRecorder = new MediaRecorder(stream, options);
@@ -907,7 +1465,7 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
     if (currentSubmissionId) formData.append("submission_id", currentSubmissionId);
 
     // Log the actual file size for debugging
-    console.log(`📤 Uploading ${savedFormat.label} (${savedFormat.bitrate ? savedFormat.bitrate/1000 + 'kbps' : 'uncompressed'}): ${(audioBlob.size/1024).toFixed(2)} KB`);
+    console.log(`Uploading ${savedFormat.label} (${savedFormat.bitrate ? savedFormat.bitrate/1000 + 'kbps' : 'uncompressed'}): ${(audioBlob.size/1024).toFixed(2)} KB`);
 
     try {
         const response = await fetch("/process-voice", { method: "POST", body: formData });
@@ -976,8 +1534,9 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
             applyAiResults(result.data);
 
             updateQuestionVisibility();
-            markSectionAnswered(sectionKey);
             updateProgressPanel();
+            // (updateProgressPanel -> updateSectionDoneBadges marks this
+            // section "تکمیل شد" only if ALL its questions are now answered)
             
             // Clear stored audio on success
             delete lastAudioBySection[sectionKey];
@@ -998,13 +1557,7 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
                 const anomalyData = await anomalyResp.json();
                 if (!anomalyData.error && anomalyData.warnings && anomalyData.warnings.length > 0) {
                     anomalyData.warnings.forEach(w => {
-                        if (!fieldWarnings[w.v_code]) {
-                            fieldWarnings[w.v_code] = [];
-                        }
-                        fieldWarnings[w.v_code].push({
-                            message: w.message,
-                            severity: w.severity || 'warning'
-                        });
+                        addFieldWarning(w.v_code, w.message, w.severity);
                     });
                     applyFieldWarnings();
                     updateSectionBadges();
@@ -1077,6 +1630,15 @@ function showToast(message) {
 }
 
 // ---------- Warning UI functions ----------
+// Add a warning for a field without stacking duplicates: re-recording a section
+// or re-running the final check must not repeat the same message.
+function addFieldWarning(vcode, message, severity) {
+    if (!vcode || !message) return;
+    const list = fieldWarnings[vcode] || (fieldWarnings[vcode] = []);
+    if (list.some(w => w.message === message)) return;
+    list.push({ message, severity: severity || 'warning' });
+}
+
 function applyFieldWarnings() {
     // Remove old warning styles from all inputs and their parent labels
     document.querySelectorAll('.field-warning, .field-critical').forEach(el => {
@@ -1173,6 +1735,9 @@ function applyAiResults(data) {
             document.querySelectorAll(`[data-vcode="${vCode}"]`).forEach(input => {
                 input.dataset.na = '1';
                 if (input.type !== 'radio' && input.type !== 'checkbox') {
+                    if (input.dataset.origPlaceholder === undefined) {
+                        input.dataset.origPlaceholder = input.placeholder || '';
+                    }
                     input.value = '';
                     input.placeholder = 'غیرمرتبط';
                 }
@@ -1181,36 +1746,38 @@ function applyAiResults(data) {
             return;
         }
 
-        if (typeof val === 'string' && val.includes(',')) {
-            const codes = val.split(',').map(c => c.trim());
-            codes.forEach(code => {
-                const checkboxes = document.querySelectorAll(
-                    `input[type="checkbox"][data-vcode="${vCode}"][value="${code}"]`
-                );
-                checkboxes.forEach(cb => {
-                    cb.checked = true;
-                    cb.closest('label').classList.add('ai-updated');
-                });
-                setTimeout(() => {
-                    checkboxes.forEach(cb => cb.closest('label').classList.remove('ai-updated'));
-                }, 3000);
+        const inputsForVCode = document.querySelectorAll(`[data-vcode="${vCode}"]`);
+        const isMultiSelect = inputsForVCode.length > 0 && inputsForVCode[0].type === 'checkbox';
+        if (isMultiSelect) {
+            const codesSet = new Set(String(val).split(',').map(c => c.trim()).filter(Boolean));
+            inputsForVCode.forEach(input => {
+                if (input.type === 'checkbox') {
+                    const shouldCheck = codesSet.has(input.value);
+                    input.checked = shouldCheck;
+                    const lbl = input.closest('label');
+                    if (shouldCheck && lbl) lbl.classList.add('ai-updated');
+                    setTimeout(() => { if (lbl) lbl.classList.remove('ai-updated'); }, 3000);
+                }
             });
         } else {
             const inputs = document.querySelectorAll(`[data-vcode="${vCode}"]`);
             inputs.forEach(input => {
                 if (input.type === 'radio') {
-                    if (input.value == val) {
-                        input.checked = true;
-                        input.closest('label').classList.add('ai-updated');
+                    const shouldCheck = input.value == val;
+                    input.checked = shouldCheck;
+                    const lbl = input.closest('label');
+                    if (lbl) {
+                        if (shouldCheck) lbl.classList.add('ai-updated');
+                        setTimeout(() => lbl.classList.remove('ai-updated'), 3000);
                     }
                 } else {
-                    input.value = val;
+                    input.value = String(val);
                     input.classList.add('ai-updated');
+                    setTimeout(() => {
+                        input.classList.remove('ai-updated');
+                        if (input.closest('label')) input.closest('label').classList.remove('ai-updated');
+                    }, 3000);
                 }
-                setTimeout(() => {
-                    input.classList.remove('ai-updated');
-                    if (input.closest('label')) input.closest('label').classList.remove('ai-updated');
-                }, 3000);
             });
         }
     });
@@ -1262,49 +1829,57 @@ document.addEventListener('change', function(event) {
     updateProgressPanel();
 });
 
+
+let finalSanityDone = false;
+let allQuestionsAnswered = false;
+
 async function submitFinalForm() {
     if (!currentSubmissionId) {
         alert('هنوز نشست پرسشنامه شروع نشده است. لطفاً صفحه را مجدداً بارگذاری کنید.');
         return;
     }
 
+    const partial = !allQuestionsAnswered;
     const submitBtn = document.getElementById('panel-submit-btn');
-    const originalLabel = submitBtn ? submitBtn.textContent : '';
     if (submitBtn) {
         submitBtn.disabled = true;
-        submitBtn.textContent = 'در حال بررسی...';
+        submitBtn.innerHTML = `<span class="flex items-center justify-center gap-2">
+            <svg class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            ${partial ? 'در حال ذخیره...' : 'در حال بررسی...'}
+        </span>`;
     }
 
     try {
-        // Final whole-form cross-section sanity pass before locking the record.
-        const finalResp = await fetch('/check-final-anomalies', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                submission_id: currentSubmissionId,
-                answers: sessionContext,
-                confidence_reasons: sessionConfidenceReasons,
-            })
-        });
-        const finalData = await finalResp.json();
-        if (!finalData.error && finalData.warnings && finalData.warnings.length > 0) {
-            finalData.warnings.forEach(w => {
-                if (!fieldWarnings[w.v_code]) fieldWarnings[w.v_code] = [];
-                fieldWarnings[w.v_code].push({
-                    message: w.message,
-                    severity: w.severity || 'warning'
-                });
+        if (!partial && !finalSanityDone) {
+            const finalResp = await fetch('/check-final-anomalies', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    submission_id: currentSubmissionId,
+                    answers: sessionContext,
+                    confidence_reasons: sessionConfidenceReasons,
+                })
             });
-            applyFieldWarnings();
-            updateSectionBadges();
-            updateWarningPanel();
-        }
+            const finalData = await finalResp.json();
+            const warnings = (!finalData.error && finalData.warnings) ? finalData.warnings : [];
+            warnings.forEach(w => {
+                addFieldWarning(w.v_code, w.message, w.severity);
+            });
+            finalSanityDone = true;
 
-        // Warn (but don't block) if anomalies are still open
-        const openWarnings = Object.values(fieldWarnings).reduce((s, a) => s + a.length, 0);
-        if (openWarnings > 0 &&
-            !confirm(`${openWarnings} هشدار بررسی‌نشده وجود دارد. آیا مطمئن هستید که می‌خواهید ثبت نهایی کنید؟`)) {
-            return;
+            if (warnings.length > 0) {
+                applyFieldWarnings();
+                updateSectionBadges();
+                updateWarningPanel();
+                const list = document.getElementById('warning-list');
+                if (list) list.classList.add('active');
+                // Scroll to the first flagged field so the user sees it.
+                const first = warnings.find(w => w.v_code && w.v_code !== 'general');
+                const el = first ? document.querySelector(`[data-vcode="${first.v_code}"]`) : null;
+                if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                showToast(`${warnings.length} هشدار یافت شد — فیلدهای مشخص‌شده را در صورت نیاز اصلاح کنید و دوباره ثبت کنید.`);
+                return; // don't save yet; next click saves without re-checking
+            }
         }
 
         // Collect grouped answers before submit
@@ -1315,8 +1890,6 @@ async function submitFinalForm() {
         Object.entries(sessionContext).forEach(([key, val]) => {
             const match = key.match(/^(.+?)_(\d+)$/);
             if (match) {
-                // Grouped: send as { base_vcode: [val0, val1, ...], group_pairs: { base_vcode: group_pair } }
-                // Actually, keep indexed keys so backend knows the group structure
                 answersPayload[key] = val;
             } else {
                 answersPayload[key] = val;
@@ -1330,24 +1903,51 @@ async function submitFinalForm() {
                 submission_id: currentSubmissionId,
                 answers: answersPayload,
                 confidence: sessionConfidence,
+                partial: partial,
             })
         });
         const data = await res.json();
         if (data.error) {
+            if (data.unanswered) {
+                allQuestionsAnswered = false;
+                updateProgressPanel();
+                alert(`ثبت نهایی ممکن نیست: ${data.error}`);
+                return;
+            }
             alert(`خطا در ثبت نهایی: ${data.error}`);
             return;
         }
-        alert(`اطلاعات با موفقیت ثبت شد. (${data.saved} پاسخ ذخیره شد)`);
-        // Lock further edits for this patient; require an explicit new start
+        if (data.status === 'draft') {
+            try { sessionStorage.setItem('vcr_flash', `پاسخ‌های شما ذخیره شد  — از داشبورد می‌توانید به پاسخ دادن ادامه دهید.`); } catch (e) { /* ignore */ }
+            currentSubmissionId = null;
+            finalSanityDone = false;
+            window.location.href = '/dashboard';
+            return;
+        }
+        let msg = `اطلاعات با موفقیت ثبت شد. (${data.saved} پاسخ ذخیره شد)`;
+        if (data.health_check && data.health_check.check_id) {
+            msg += data.health_check.existing ? "\nچکاپ شما قبلاً ایجاد شده است." : "\n✓ چکاپ سلامت شما ایجاد شد — در داشبورد قابل مشاهده است.";
+        }
+        // No blocking alert — hand the message to the dashboard, which shows it
+        // as a toast in the bottom-right corner after the redirect.
+        try { sessionStorage.setItem('vcr_flash', msg); } catch (e) { /* ignore */ }
+        if (data.health_check && data.health_check.check_id && !data.health_check.existing) {
+            window.location.href = `/health-check/${data.health_check.check_id}`;
+            return;
+        }
+        // Submission complete & responses saved in DB — return to the dashboard
+        // (the health-check branch above keeps its own redirect target)
         currentSubmissionId = null;
-        document.getElementById('status-badge').textContent = 'ثبت شد';
+        finalSanityDone = false;
+        window.location.href = '/dashboard';
     } catch (err) {
         console.error('complete-submission failed:', err);
         alert('ارتباط با سرور با مشکل مواجه شد.');
     } finally {
         if (submitBtn) {
             submitBtn.disabled = false;
-            submitBtn.textContent = originalLabel;
+            // Rebuild the two-state button (icon/color/label) from progress data.
+            updateProgressPanel();
         }
     }
 }

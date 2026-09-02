@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.db.session import get_db
+from app.services.visibility import parse_rules
 
 
 def _int(val):
@@ -79,18 +80,22 @@ async def admin_submissions(
         # Get user info
         user = db.query(models.User).filter(models.User.user_id == sub.user_id).first()
 
-        # Count responses
-        response_count = db.query(models.Response).filter(
-            models.Response.submission_id == sub.submission_id
-        ).count()
+        # Get form info
+        form = None
+        if sub.form_id:
+            try:
+                form = db.query(models.Form).filter(models.Form.form_id == int(sub.form_id)).first()
+            except (ValueError, TypeError):
+                pass
 
         result.append({
             "submission_id": str(sub.submission_id),
+            "form_id": str(sub.form_id) if sub.form_id else None,
+            "form_name": form.form_name if form else "نامشخص",
             "user_name": f"{user.first_name or ''} {user.last_name or ''}" if user else "Unknown",
             "national_code": user.national_code if user else "N/A",
             "status": sub.status,
             "created_at": sub.created_at.isoformat() if sub.created_at else None,
-            "response_count": response_count
         })
 
     return result
@@ -118,6 +123,14 @@ async def admin_submission_detail(
     # Get user
     user = db.query(models.User).filter(models.User.user_id == submission.user_id).first()
 
+    # Get form info
+    form = None
+    if submission.form_id:
+        try:
+            form = db.query(models.Form).filter(models.Form.form_id == int(submission.form_id)).first()
+        except (ValueError, TypeError):
+            pass
+
     # Get all responses
     responses = db.query(models.Response).filter(
         models.Response.submission_id == sub_id
@@ -141,8 +154,31 @@ async def admin_submission_detail(
             "processed_at": resp.processed_at.isoformat() if resp.processed_at else None
         })
 
+    # Cross-form answers: pull every response the user has saved across ALL
+    # of their submissions so visibility rules that depend on a parent living
+    # in a different form (e.g. A4 gender in form 1 -> deactive_options on K1
+    # in form 2) still evaluate correctly in admin view.
+    cross_form_answers = {}
+    if user:
+        other_responses = db.query(models.Response).join(
+            models.Submission,
+            models.Response.submission_id == models.Submission.submission_id,
+        ).filter(
+            models.Submission.user_id == user.user_id,
+        ).order_by(
+            models.Response.processed_at.asc(),
+            models.Response.response_id.asc(),
+        ).all()
+        for r in other_responses:
+            if r.extracted_value is None or r.extracted_value == "":
+                continue
+            key = f"{r.v_code}_{r.group_index}" if r.group_index is not None else r.v_code
+            cross_form_answers[key] = r.extracted_value
+
     return {
         "submission_id": str(submission.submission_id),
+        "form_id": str(submission.form_id) if submission.form_id else None,
+        "form_name": form.form_name if form else "نامشخص",
         "status": submission.status,
         "created_at": submission.created_at.isoformat() if submission.created_at else None,
         "updated_at": submission.updated_at.isoformat() if submission.updated_at else None,
@@ -153,7 +189,8 @@ async def admin_submission_detail(
             "national_code": user.national_code if user else None,
             "phone_number": user.phone_number if user else None
         } if user else None,
-        "responses": responses_data
+        "responses": responses_data,
+        "cross_form_answers": cross_form_answers,
     }
 
 
@@ -240,12 +277,13 @@ async def admin_delete_user(
 @router.get("/forms")
 async def admin_forms(db: Session = Depends(get_db)):
     """List all forms"""
-    forms = db.query(models.Form).order_by(models.Form.form_name).all()
+    forms = db.query(models.Form).order_by(models.Form.sort_order, models.Form.form_id).all()
     return [
         {
             "form_id": str(f.form_id),
             "form_name": f.form_name,
             "category": f.category,
+            "sort_order": f.sort_order,
         }
         for f in forms
     ]
@@ -258,6 +296,7 @@ async def admin_create_form(payload: dict, db: Session = Depends(get_db)):
         f = models.Form(
             form_name=payload.get("form_name"),
             category=payload.get("category"),
+            sort_order=payload.get("sort_order", 0),
         )
         db.add(f)
         db.commit()
@@ -280,6 +319,8 @@ async def admin_update_form(form_id: str, payload: dict, db: Session = Depends(g
         f.form_name = payload["form_name"]
     if "category" in payload:
         f.category = payload["category"]
+    if "sort_order" in payload:
+        f.sort_order = payload["sort_order"]
     db.commit()
     return {"success": True}
 
@@ -417,6 +458,7 @@ async def admin_section_questions(section_id: str, db: Session = Depends(get_db)
             "manual_prompt": q.manual_prompt,
             "sort_order": q.sort_order,
             "group_pair": q.group_pair,
+            "visibility_rules": q.visibility_rules,
         }
         for q in questions
     ]
@@ -437,6 +479,7 @@ async def admin_create_question(payload: dict, db: Session = Depends(get_db)):
             manual_prompt=payload.get("manual_prompt"),
             sort_order=payload.get("sort_order", 0),
             group_pair=payload.get("group_pair"),
+            visibility_rules=parse_rules(payload.get("visibility_rules")),
         )
         db.add(q)
         db.commit()
@@ -459,6 +502,8 @@ async def admin_update_question(question_id: str, payload: dict, db: Session = D
                   "coding_options", "unit", "manual_prompt", "sort_order", "group_pair"):
         if field in payload:
             setattr(q, field, payload[field])
+    if "visibility_rules" in payload:
+        q.visibility_rules = parse_rules(payload["visibility_rules"])
     if "section_id" in payload:
         q.section_id = _int(payload["section_id"])
     db.commit()

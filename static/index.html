@@ -34,6 +34,9 @@
             border-bottom: 1px solid #f3f4f6;
             background: #fafbfc;
         }
+        #progress-panel .panel-header h3 {
+            font-size: 1.1rem;
+        }
         #progress-panel .panel-body {
             flex: 1;
             padding: 8px;
@@ -149,6 +152,38 @@
             #progress-panel-toggle {
                 display: flex;
             }
+            main {
+                padding-bottom: 7rem;
+            }
+            #warning-summary-panel {
+                left: 12px;
+                top: 76px;
+            }
+            #toast-container {
+                left: 12px;
+                right: 12px;
+                bottom: 12px;
+            }
+            .toast {
+                max-width: none;
+            }
+        }
+        @media (max-width: 640px) {
+            #progress-panel {
+                width: min(280px, 85vw);
+            }
+            #warning-toggle-btn {
+                padding: 6px 12px;
+                font-size: 0.8rem;
+            }
+            #floating-stop-btn {
+                bottom: 16px;
+                left: 16px;
+            }
+            #volume-meter-container {
+                bottom: 16px;
+                left: 72px;
+            }
         }
 
         /* Keep form centered; margin-right makes room for the panel on the right */
@@ -158,6 +193,16 @@
                 margin: 0 auto;
                 margin-right: 270px;
                 padding: 32px 24px;
+            }
+        }
+
+        /* Patient card: prevent overflow on small screens */
+        #patient-card .mr-auto {
+            margin-right: auto;
+        }
+        @media (max-width: 640px) {
+            #patient-card .flex.items-center.gap-3 {
+                flex-wrap: wrap;
             }
         }
 
@@ -253,7 +298,7 @@
             border: 1px solid #f97316;
             border-radius: 12px;
             padding: 12px;
-            max-width: 320px;
+            max-width: min(320px, calc(100vw - 32px));
             box-shadow: 0 8px 24px rgba(0,0,0,0.15);
             display: none;
         }
@@ -346,14 +391,14 @@
 <body class="bg-gray-50 text-gray-800 antialiased">
 
     <header class="bg-white shadow-sm sticky top-0 z-50 border-b border-gray-100">
-        <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
-            <div>
-                <h1 class="text-2xl font-bold text-blue-600">پروژه VCR</h1>
-                <p class="text-xs text-gray-400">سیستم استخراج داده‌های کوهرت با هوش مصنوعی</p>
+        <div class="max-w-4xl mx-auto px-4 py-3 sm:py-4 flex items-center justify-between gap-2 flex-wrap">
+            <div class="min-w-0">
+                <h1 class="text-xl sm:text-2xl font-bold text-blue-600">پروژه VCR</h1>
+                <p class="text-xs text-gray-400 hidden sm:block">سیستم استخراج داده‌های کوهرت با هوش مصنوعی</p>
             </div>
-            <div class="flex items-center gap-4">
-                <a href="/dashboard" class="text-sm text-gray-500 hover:text-blue-600 font-medium transition">داشبورد</a>
-                <div id="status-badge" class="bg-blue-50 text-blue-600 px-4 py-2 rounded-full text-sm font-medium">
+            <div class="flex items-center gap-2 sm:gap-4 shrink-0">
+                <a href="/dashboard" class="hidden sm:inline text-sm text-gray-500 hover:text-blue-600 font-medium transition">داشبورد</a>
+                <div id="status-badge" class="bg-blue-50 text-blue-600 px-3 sm:px-4 py-2 rounded-full text-xs sm:text-sm font-medium whitespace-nowrap">
                     آماده دریافت داده
                 </div>
             </div>
@@ -371,7 +416,7 @@
     <div id="progress-panel">
         <div class="panel-header">
             <div class="flex items-center justify-between">
-                <h3 class="text-sm font-bold text-gray-700">پیشرفت ثبت</h3>
+                <h3 id="progress-panel-title" class="text-sm font-bold text-gray-700" style="font-size: 1rem; color: #374151;">پیشرفت ثبت</h3>
                 <button onclick="toggleProgressPanel()" class="text-gray-400 hover:text-gray-600 transition lg:hidden">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
@@ -394,12 +439,12 @@
         </div>
         <div class="panel-footer">
             <button onclick="submitFinalForm()" id="panel-submit-btn"
-                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-xl transition-all text-sm shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed">
+                    class="w-full bg-slate-500 hover:bg-slate-600 text-white font-bold py-2.5 px-4 rounded-xl transition-all text-sm shadow-sm hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed">
                 <span class="flex items-center justify-center gap-2">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                     </svg>
-                    ذخیره و ثبت نهایی
+                    ثبت و خروج
                 </span>
             </button>
         </div>
@@ -419,7 +464,7 @@
                     <p class="text-sm text-gray-400" id="patient-card-subtitle">بیمار انتخاب شده برای ثبت پرسشنامه</p>
                 </div>
                 <div class="mr-auto">
-                    <span id="patient-card-badge" class="bg-green-100 text-green-700 text-xs font-bold px-3 py-1.5 rounded-full">✓ احراز هویت شده</span>
+                    <span id="patient-card-badge" class="bg-green-100 text-green-700 text-xs font-bold px-3 py-1.5 rounded-full inline-flex items-center gap-1"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg> احراز هویت شده</span>
                 </div>
             </div>
             <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -511,6 +556,6 @@
     <div id="toast-container"></div>
 
     <!-- Load all JavaScript from external file -->
-    <script src="/static/app.js?v=3"></script>
+    <script src="/static/app.js?v=8"></script>
 </body>
 </html> 

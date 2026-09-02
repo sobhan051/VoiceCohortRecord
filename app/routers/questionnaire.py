@@ -1,5 +1,6 @@
 """Questionnaire flow: form structure, voice processing, anomaly checks,
 and submission lifecycle."""
+import json
 import os
 import re
 import shutil
@@ -7,7 +8,7 @@ import uuid
 from datetime import datetime
 
 from app.services.audio_processor import process_audio_file
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile, BackgroundTasks
 from sqlalchemy import and_, desc
 from sqlalchemy.orm import Session
 
@@ -15,13 +16,27 @@ from app import models
 from app.core.config import UPLOAD_DIR
 from app.db.session import get_db
 from app.services.ai_engine import PromptGenerator
-from app.services.responses import upsert_response
+from app.services.visibility import normalize_answers
+from app.services.responses import upsert_response, delete_section_responses
+
+from app.services.health_check import (
+    queue_user_health_check,
+    is_health_check_eligible,
+)
 
 router = APIRouter()
 
 
 @router.get("/get-form-structure")
 async def get_form(form_id: str = None, db: Session = Depends(get_db)):
+    form_obj = None
+    if form_id:
+        try:
+            fid = int(form_id)
+            form_obj = db.query(models.Form).filter(models.Form.form_id == fid).first()
+        except ValueError:
+            pass
+
     query = db.query(models.Section)
     if form_id:
         try:
@@ -42,6 +57,13 @@ async def get_form(form_id: str = None, db: Session = Depends(get_db)):
             "depends_on_value": s.depends_on_value,
             "questions": qs
         })
+
+    if form_obj:
+        return {
+            "form_id": form_obj.form_id,
+            "form_name": form_obj.form_name,
+            "sections": result
+        }
     return result
 
 
@@ -70,7 +92,9 @@ async def check_section_anomalies(
         models.Question.section_id == section.section_id
     ).all()
 
-    # Build metadata for only those questions
+    normalized_answers, applicable_map = normalize_answers(questions, answers)
+
+
     questions_meta = [
         {
             "v_code": q.v_code,
@@ -80,19 +104,12 @@ async def check_section_anomalies(
             "coding_options": q.coding_options,
         }
         for q in questions
+        if applicable_map.get(q.v_code, True)
     ]
 
-    # Filter answers to only include the section’s v_codes + perhaps gender (A4) for cross‑consistency
     relevant_vcodes = {q.v_code for q in questions}
-    # Add gender if present (to catch male + pregnancy)
-    # if "A4" in answers:
-    #     relevant_vcodes.add("A4")
+    filtered_answers = {v: normalized_answers[v] for v in relevant_vcodes if v in normalized_answers}
 
-    filtered_answers = {v: answers[v] for v in relevant_vcodes if v in answers}
-
-    # Pull the verbatim transcript of this section's recording from the stored
-    # responses so the checker can confirm suspicious readings and catch
-    # values that were spoken but not extracted.
     transcript = None
     if submission_id:
         try:
@@ -100,8 +117,13 @@ async def check_section_anomalies(
                 and_(
                     models.Response.submission_id == int(submission_id),
                     models.Response.transcript.isnot(None),
+                    models.Response.v_code.in_(list(relevant_vcodes)),
                 )
+            ).order_by(
+                desc(models.Response.processed_at),
+                desc(models.Response.response_id),
             ).limit(1).first()
+
             if saved and saved.transcript:
                 transcript = saved.transcript
         except (ValueError, AttributeError):
@@ -157,13 +179,19 @@ async def check_final_anomalies(
         if q.section_id in sections_by_id
     }
 
+    normalized_answers, applicable_map = normalize_answers(
+        list(vcode_to_question.values()), answers
+    )
+
     # Group the current answer set by section for the model.
     all_questions_meta = {}
-    for vc, val in answers.items():
+    for vc, val in normalized_answers.items():
         if val is None or val == "":
             continue
         q = vcode_to_question.get(vc)
         if not q:
+            continue
+        if applicable_map.get(vc, True) is False:
             continue
         sk = vcode_to_section.get(vc, "سایر")
         all_questions_meta.setdefault(sk, []).append({
@@ -178,17 +206,21 @@ async def check_final_anomalies(
     transcripts = {}
     saved = db.query(models.Response).filter(
         models.Response.submission_id == sub_id
+    ).order_by(
+        models.Response.processed_at.asc(),
+        models.Response.response_id.asc(),
     ).all()
+
     for r in saved:
         if not r.transcript:
             continue
         sk = vcode_to_section.get(r.v_code)
         if sk:
-            transcripts.setdefault(sk, r.transcript)
+            transcripts[sk] = r.transcript
 
     try:
         warnings = PromptGenerator.check_final_anomalies(
-            answers, all_questions_meta, transcripts, confidence_reasons
+            normalized_answers, all_questions_meta, transcripts, confidence_reasons
         )
         return {"warnings": warnings}
     except Exception as e:
@@ -237,10 +269,6 @@ async def start_submission(
             )
             db.add(user)
             db.flush()  # populate user_id without ending the transaction
-
-    # Resolve the form this submission belongs to. The questionnaire UI doesn't
-    # track a form, so accept an optional form_id and otherwise fall back to the
-    # first available form. submissions.form_id is NOT NULL in the database.
     form = None
     form_id = payload.get("form_id")
     if form_id:
@@ -251,14 +279,26 @@ async def start_submission(
         if not form:
             return {"error": "فرم یافت نشد"}
     if form is None:
-        form = db.query(models.Form).order_by(models.Form.form_name).first()
+        from app.services.forms import is_form_fully_completed, locked_by_earlier_forms
+        for f in db.query(models.Form).order_by(models.Form.sort_order, models.Form.form_id).all():
+            if not locked_by_earlier_forms(db, user.user_id, f.form_id):
+                form = f
+                break
+        if form is None:  # every form locked (shouldn't happen: first form has no predecessors)
+            form = db.query(models.Form).order_by(models.Form.sort_order).first()
     if form is None:
         return {"error": "هیچ فرمی تعریف نشده است"}
 
-    # Progressive resume: reuse this patient's most recent submission for the
-    # form regardless of status, so a returning patient continues where they
-    # left off instead of starting an empty questionnaire. A completed
-    # submission is reopened to "draft" so the remaining sections can be filled.
+    # Form sequence gate: earlier forms must be fully completed first.
+    from app.services.forms import locked_by_earlier_forms
+    blocked = locked_by_earlier_forms(db, user.user_id, form.form_id)
+    if blocked:
+        names = " و ".join(f.form_name for f in blocked)
+        return {
+            "error": f"برای شروع «{form.form_name}» ابتدا باید فرم «{names}» را کامل کنید",
+            "locked": True,
+        }
+
     submission = db.query(models.Submission).filter(
         and_(
             models.Submission.user_id == user.user_id,
@@ -277,11 +317,12 @@ async def start_submission(
     db.commit()
     db.refresh(submission)
 
-    # Load any answers already saved for this submission so the UI can prefill
-    # the answered fields and mark their sections as done. Map each v_code to
-    # its section_key (via the question) for section-level progress.
+
     saved_responses = db.query(models.Response).filter(
         models.Response.submission_id == submission.submission_id
+    ).order_by(
+        models.Response.processed_at.asc(),
+        models.Response.response_id.asc(),
     ).all()
 
     section_key_by_qid = {}
@@ -310,6 +351,8 @@ async def start_submission(
         "user_id": str(user.user_id),
         "user_name": f"{user.first_name or ''} {user.last_name or ''}".strip(),
         "national_code": user.national_code,
+        "form_id": str(form.form_id),
+        "form_name": form.form_name,
         "status": submission.status,
         "answers": answers,
         "confidence": confidence,
@@ -319,7 +362,8 @@ async def start_submission(
 
 @router.post("/complete-submission")
 async def complete_submission(
-    payload: dict,   # { "submission_id": "...", "answers": {v_code: value}, "confidence": {v_code: 0..1} }
+    payload: dict,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
     """Persist the final answer set (including manually typed fields) and mark
@@ -343,6 +387,8 @@ async def complete_submission(
 
     # Cache questions by v_code so manual-only fields still link to their question
     questions = {q.v_code: q for q in db.query(models.Question).all()}
+
+    answers, _applicable_map = normalize_answers(list(questions.values()), answers)
 
     saved = 0
     for v_code, value in answers.items():
@@ -386,11 +432,69 @@ async def complete_submission(
             )
         saved += 1
 
+    partial = bool(payload.get("partial"))
+
+    if partial:
+        db.flush()
+        from app.services.forms import get_form_completion
+        comp = get_form_completion(db, submission.user_id, submission.form_id)
+        if comp["fully_completed"]:
+            submission.status = "completed"
+        else:
+            submission.status = "draft"
+        submission.updated_at = datetime.now()
+        db.commit()
+        return {
+            "success": True,
+            "status": submission.status,
+            "saved": saved,
+            "submission_id": str(sub_id),
+            "unanswered": comp["required_total"] - comp["answered"],
+        }
+
+    from app.services.forms import get_form_completion
+    db.flush()  # make the just-saved answers visible to the completion query
+    comp = get_form_completion(db, submission.user_id, submission.form_id)
+    if not comp["fully_completed"]:
+        remaining = comp["required_total"] - comp["answered"]
+        submission.status = "draft"
+        submission.updated_at = datetime.now()
+        db.commit()
+        return {
+            "error": f"{remaining} سوال الزامی هنوز بی‌پاسخ است — برای ثبت نهایی باید به همه سوالات الزامی پاسخ دهید",
+            "unanswered": remaining,
+            "status": "draft",
+        }
+
     submission.status = "completed"
     submission.updated_at = datetime.now()
     db.commit()
 
-    return {"success": True, "submission_id": str(sub_id), "saved": saved}
+    # --- Health check trigger: queued, non-blocking ---
+    health_info = None
+    try:
+        existing = (
+            db.query(models.HealthCheck)
+            .filter(models.HealthCheck.user_id == submission.user_id)
+            .first()
+        )
+
+        if existing:
+            health_info = {
+                "check_id": str(existing.check_id),
+                "existing": True,
+            }
+        elif is_health_check_eligible(db, submission.user_id):
+            queued = queue_user_health_check(background_tasks, submission.user_id)
+            if queued:
+                health_info = {"status": "queued"}
+    except Exception as e:
+        print(f"[health trigger] failed: {e}")
+
+    out = {"success": True, "submission_id": str(sub_id), "saved": saved}
+    if health_info:
+        out["health_check"] = health_info
+    return out
 
 
 @router.post("/process-voice")
@@ -403,7 +507,7 @@ async def process_voice(
     db: Session = Depends(get_db)
 ):
     # Log the incoming format for debugging
-    print(f"📥 Received audio: {audio.filename}")
+    print(f"Received audio: {audio.filename}")
     print(f"   Content-Type: {audio.content_type}")
     print(f"   Format: {audio_format}")
     print(f"   Bitrate: {bitrate}")
@@ -452,29 +556,47 @@ async def process_voice(
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(audio.file, buffer)
 
-    # Server-side: trim silence + normalize loudness via ffmpeg, then archive
-    # both the original and processed clips for testing. (Cleanup + opus->wav
-    # switch can be added once testing is done.)
-    processed_path = process_audio_file(file_path)
-
     try:
-        result = PromptGenerator.process_audio(processed_path, questions)
-
+        result = PromptGenerator.process_audio(file_path, questions)
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')
         confidence_map = result.get('confidence', {}) or {}
+        merged = {}
+        if sub_id:
+            for r in db.query(models.Response).filter(
+                models.Response.submission_id == sub_id
+            ).all():
+                if r.extracted_value is not None:
+                    merged[r.v_code] = r.extracted_value
+        merged.update({k: v for k, v in extracted_data.items() if v is not None})
+        merged, _applicable_map = normalize_answers(questions, merged)
+        section_vcodes = {q.v_code for q in questions}
+        filtered_data = {}
+        for k, v in merged.items():
+            m = re.match(r'^(.+?)_(\d+)$', k)
+            if (m.group(1) if m else k) in section_vcodes:
+                filtered_data[k] = v
+        extracted_data = filtered_data
+        
+        # A new voice recording for this section replaces the previous state of this section.
+        if sub_id:
+            delete_section_responses(db, sub_id, questions)
 
         # Save responses
         for v_code, val in extracted_data.items():
             if val is None:
                 continue
 
-            # Handle indexed v_codes (e.g. "D1_0")
             group_idx = None
+            storage_vcode = v_code
+
+            # Handle indexed v_codes like "D1_1"
             match = re.match(r'^(.+?)_(\d+)$', v_code)
             if match:
                 base_vcode = match.group(1)
                 group_idx = int(match.group(2))
+                storage_vcode = base_vcode
+
                 q = db.query(models.Question).filter(
                     models.Question.v_code == base_vcode
                 ).first()
@@ -482,13 +604,18 @@ async def process_voice(
                 q = db.query(models.Question).filter(
                     models.Question.v_code == v_code
                 ).first()
+
                 # If this is a grouped question, default to group_index=0
                 if q and q.group_pair:
                     group_idx = 0
 
             if q:
                 upsert_response(
-                    db, sub_id, q, v_code, val,
+                    db,
+                    sub_id,
+                    q,
+                    storage_vcode,
+                    val,
                     transcript=transcript_text,
                     is_voice=True,
                     confidence=confidence_map.get(v_code),

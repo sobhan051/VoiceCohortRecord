@@ -5,3 +5,7 @@ psycopg2-binary
 google-genai
 python-dotenv
 python-multipart
+requests
+jdatetime
+pandas
+openpyxl

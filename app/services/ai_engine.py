@@ -15,6 +15,7 @@ from google.genai.types import (
 )
 
 from app.core import config
+from app.services.visibility import parse_rules
 
 # HTTP status codes worth retrying on a different key / after a backoff:
 #   429 RESOURCE_EXHAUSTED  -> that key is out of quota / rate limited
@@ -196,19 +197,52 @@ class PromptGenerator:
         }
 
     @staticmethod
-    def _append_option_meanings(desc_parts, q):
-        """Append the human meaning of each option code (e.g. 1=زن, 2=مرد)
-        so the checker reasons about clinical meaning, not opaque codes."""
+    def _parse_options(q):
+        """coding_options JSONB (dict or JSON string) -> dict, or None."""
         opts = q.get("coding_options")
         if not opts:
-            return
+            return None
         try:
             opts = json.loads(opts) if isinstance(opts, str) else opts
         except Exception:
+            return None
+        return opts if isinstance(opts, dict) and opts else None
+
+    @classmethod
+    def _decode_value(cls, value, opts):
+        """Decode the stored answer code(s) using coding_options.
+
+        "1"   -> "1 (مرد)"
+        "1,3" -> "1,3 (دیابت، بیماری قلبی)"
+        "1385" (no option match) -> None  — leave the value untouched.
+        Tolerates stray float strings ("1.0") in old rows.
+        """
+        if not opts:
+            return None
+        tokens = [t.strip() for t in str(value).split(",")]
+        labels = []
+        for t in tokens:
+            label = opts.get(t)
+            if label is None and t:
+                try:
+                    label = opts.get(str(int(float(t))))
+                except (ValueError, OverflowError):
+                    label = None
+            if label is None:
+                return None  # any unmatched token -> not a coded answer
+            labels.append(str(label))
+        sep = "، "
+        return f"{value} ({sep.join(labels)})"
+
+    @staticmethod
+    def _append_option_meanings(desc_parts, q):
+        """Append the human meaning of each option code (e.g. 1=زن, 2=مرد)
+        so the checker reasons about clinical meaning, not opaque codes."""
+        opts = PromptGenerator._parse_options(q)
+        if not opts:
             return
-        if isinstance(opts, dict) and opts:
-            meaning = ", ".join(f"{k}={v}" for k, v in opts.items())
-            desc_parts.append(f"options: {meaning}")
+        meaning = ", ".join(f"{k}={v}" for k, v in opts.items())
+        desc_parts.append(f" | options: {meaning}")
 
     @classmethod
     def _build_field_line(cls, q, value, include_options=True):
@@ -217,24 +251,54 @@ class PromptGenerator:
         ]
         if q.get("unit"):
             parts.append(f", unit {q['unit']}")
-        parts.append(f") → ANSWER: {value}")
+        # Decode the chosen code inline so the model never has to cross-reference
+        # the options list: ANSWER: 1 (مرد). Deterministic lookup, no inference.
+        shown = cls._decode_value(value, cls._parse_options(q)) or str(value)
+        parts.append(f") → ANSWER: {shown}")
         if include_options:
             cls._append_option_meanings(parts, q)
         return "".join(parts)
 
+    @staticmethod
+    def _anomaly_rules(scope):
+        """Shared strict flagging rules for both anomaly checks.
+
+        The checks are the LAST quality gate before answers become research
+        data: flag only record-corrupting errors, never health findings.
+        """
+        return (
+            "You are the final data-quality gate for a medical cohort study. "
+            f"Review {scope} ONLY for errors that would corrupt the dataset or "
+            "prove the recorded value is wrong.\n\n"
+            "FLAG ONLY these (data errors):\n"
+            "1. Medically or physically IMPOSSIBLE values (age 250, weight 1500 kg, "
+            "systolic BP 12, 25 hours per day, 30 daily meals).\n"
+            "2. HARD logical contradictions between answers (sex=male + pregnancy; "
+            "'never smoked' + 10 pack-years; no teeth + daily brushing of own teeth).\n"
+            "3. Obvious transcription/extraction corruption: the value contradicts "
+            "the verbatim transcript for the SAME field, or an obviously wrong unit "
+            "or scale (height 180 recorded as 1.8, weight 80 kg recorded as 80000).\n\n"
+            "NEVER FLAG these (they are VALID research data, not errors):\n"
+            "- Unhealthy but plausible lifestyle answers: smoking, alcohol, obesity, "
+            "no exercise, poor sleep, junk food. The study exists to collect these.\n"
+            "- Rare, unusual, or high values that are medically possible.\n"
+            "- Missing answers or skipped questions. Never mention missing data.\n"
+            "- Anything already \"N/A\" (question was not applicable).\n"
+            "- Health risks, disease probabilities, diet or lifestyle advice — you "
+            "are NOT doing a health assessment here, another process handles that.\n\n"
+            "WHEN IN DOUBT, DO NOT FLAG. A false warning wastes the field worker's "
+            "time; subtle issues are filtered statistically later. "
+            "Most questionnaires deserve ZERO warnings.\n"
+            "Return AT MOST 3 warnings — only the most important ones. "
+            "'critical' = record unusable (impossible value / hard contradiction); "
+            "'warning' = likely transcription error worth re-checking. "
+            "'message' must be a short explanation in Persian.\n\n"
+        )
+
     @classmethod
     def check_anomalies(cls, answers, questions_meta, confidence_reasons=None, transcript=None):
-        # Build base prompt
-        prompt = (
-            "You are a medical quality control assistant. "
-            "Review the following patient answers for clinical inconsistencies, "
-            "medically suspicious values, contradictions, or suspicious combinations. "
-            "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that are "
-            "clearly medically significant or potentially unsafe. "
-            "Do not nitpick minor or harmless details. "
-            "A value of \"N/A\" means the question was not applicable (its precondition "
-            "was not met); never flag it as missing, contradictory, or suspicious.\n\n"
-        )
+        # Build base prompt — dataset QC, not health assessment.
+        prompt = cls._anomaly_rules(scope="this section's answers")
 
         # Append field descriptions (options decoded so the model reasons about
         # the clinical meaning behind each code)
@@ -276,7 +340,7 @@ class PromptGenerator:
             "'v_code' (the code of the suspicious field), "
             "'message' (short explanation in Persian), and "
             "'severity' (either 'warning' or 'critical'). "
-            "If everything looks consistent, return an empty array.\n"
+            "If nothing is CLEARLY wrong, return an empty array [].\n"
             "Output ONLY a valid JSON array, no other text."
         )
 
@@ -287,9 +351,7 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=PromptGenerator._format_warning_schema(),
-                    thinking_config=ThinkingConfig(
-                        thinking_level="minimal"
-                    ),
+                    thinking_config=ThinkingConfig(thinking_level="low"),
                 ),
             )
 
@@ -307,20 +369,9 @@ class PromptGenerator:
     @classmethod
     def check_final_anomalies(cls, all_answers, all_questions_meta, transcripts=None, confidence_reasons=None):
         """Cross-section quality pass over ALL answers of a submission at submit
-        time — catches contradictions between sections (e.g. section B says
-        'never smoked' while section C's meds include a COPD drug)."""
-        prompt = (
-            "You are a medical quality control assistant reviewing the COMPLETE "
-            "set of answers for one patient across ALL form sections. "
-            "Look for inconsistencies, contradictions, medically impossible or "
-            "suspicious values, and unsafe combinations that may span across "
-            "different sections of the questionnaire. "
-            "IMPORTANT: Be tolerant of small inconsistencies. Only flag issues that "
-            "are clearly medically significant or potentially unsafe. "
-            "Do not nitpick minor wording or harmless details. "
-            "A value of \"N/A\" means the question was not applicable (its precondition "
-            "was not met); never flag it as missing, contradictory, or suspicious.\n\n"
-        )
+        time — catches record-corrupting errors spanning sections (e.g. section
+        B says 'never smoked' while section C reports 10 pack-years)."""
+        prompt = cls._anomaly_rules(scope="the COMPLETE set of answers for one patient across ALL form sections")
 
         # All answered fields with section context.
         for section, questions_meta in all_questions_meta.items():
@@ -363,7 +414,7 @@ class PromptGenerator:
             "'v_code' (the code of the suspicious field), "
             "'message' (short explanation in Persian), and "
             "'severity' (either 'warning' or 'critical'). "
-            "If everything looks consistent, return an empty array.\n"
+            "If nothing is CLEARLY wrong, return an empty array [].\n"
             "Output ONLY a valid JSON array, no other text."
         )
 
@@ -374,9 +425,7 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=PromptGenerator._format_warning_schema(),
-                    thinking_config=ThinkingConfig(
-                        thinking_level="minimal"
-                    ),
+                    thinking_config=ThinkingConfig(thinking_level="low"),
                 ),
             )
 
@@ -576,6 +625,29 @@ class PromptGenerator:
                     f"CODE {q.v_code} | Question: {q_text} | Type: {q_type}. Extract the value, return null if missing.{group_note}"
                 )
 
+        # Dependency rules from questions.visibility_rules (JSONB). These are
+        # binding — the backend re-checks them after extraction, but telling
+        # the model up front avoids wasted or contradictory values.
+        dep_lines = []
+        for q in questions:
+            rules = parse_rules(getattr(q, "visibility_rules", None))
+            if not rules:
+                continue
+            rule_strs = [
+                "[" + " OR ".join(f"{r['v_code']}={v}" for v in r["values"]) + "]"
+                for r in rules["rules"]
+            ]
+            joiner = " OR " if rules["logic"] == "any" else " AND "
+            dep_lines.append(
+                f"{q.v_code}: applies only if " + joiner.join(rule_strs)
+                + "; if the condition is not satisfied return \"N/A\" for it."
+            )
+        if dep_lines:
+            specs.append(
+                "\nDEPENDENCY RULES (a question that does not apply must be \"N/A\"):\n"
+                + "\n".join(dep_lines)
+            )
+
         prompt = (
             "You are a medical data entry assistant. "
             "Transcribe the audio in Farsi and analyze it and extract answers according to the rules below.\n\n"
@@ -591,29 +663,21 @@ class PromptGenerator:
             "and will be used to recover any field that could not be extracted. "
             "If a field is unclear, still extract every other field and leave only the "
             "unclear fields as null.\n\n"
-            
-            "CONDITIONAL QUESTIONS (DEPENDENCIES): Many questions only apply if a 'gateway' question is answered in a specific way. "
-            "You must logically evaluate gateway questions first to determine if dependent questions apply.\n"
-            "Common Dependency Chains in this dataset:\n"
-            "- Diabetes: If 'آیا به دیابت مبتلا هستید؟' is 'خیر' (No), then 'سن در زمان تشخیص دیابت' and 'آیا تحت درمان برای دیابت بوده/استید؟' are NOT APPLICABLE.\n"
-            "- Smoking: If 'آیا در طول زندگی حداقل ۱۰۰ نخ سیگار کشیده‌اید؟' is 'خیر' (No), then all subsequent smoking questions (age started, current smoking, age stopped) are NOT APPLICABLE.\n"
-            "- Dentures: If 'آیا دندان مصنوعی دارید؟' is 'خیر' (No), then 'از چه سنی دندان مصنوعی دارید؟' is NOT APPLICABLE.\n"
-            "- Napping: If 'آیا در طول روز می‌خوابید؟' is 'خیر' (No), then 'هر بار چند دقیقه می‌خوابید؟' is NOT APPLICABLE.\n"
-            "- Menstruation/Pregnancy: If 'آیا تاکنون قاعده شده‌اید؟' is 'خیر' (No), then age of menstruation and pregnancy questions are NOT APPLICABLE.\n"
-            "- Surgery: If 'آیا سابقه جراحی داشته‌اید؟' is 'خیر' (No), then 'تعداد دفعات جراحی' is NOT APPLICABLE.\n\n"
-            
-            "STRICT RULES FOR DEPENDENCIES:\n"
-            "1. LOGICALLY NOT APPLICABLE (N/A): If a gateway question was explicitly answered in a way that rules out the dependent question (e.g., gateway is 'No' / 'خیر'), set the dependent field's value to exactly \"N/A\".\n"
-            "2. GATEWAY NOT MENTIONED: If the gateway question itself was NEVER mentioned in the audio (is `null`), you CANNOT assume the dependent question is N/A. You must set the dependent question to `null` as well, unless the dependent question was explicitly answered.\n"
-            "3. APPLICABLE BUT NOT MENTIONED: If the gateway question makes the dependent question applicable (e.g., patient HAS diabetes), but the specific dependent detail (e.g., age of diagnosis) was NOT spoken, return `null` for the dependent detail, NOT \"N/A\".\n"
-            "4. Never use \"N/A\" merely because a value was not mentioned. \"N/A\" strictly means the question logically does not apply to this patient based on a confirmed previous answer.\n\n"
-            
-            "CONFIDENCE AND REASONING:\n"
-            "For every field, provide a confidence score between 0 and 1 (0 = completely guessing, 1 = absolutely certain). "
-            "The confidence must be below 1 whenever the value was hard to hear, ambiguous, or inferred. "
-            "Additionally, provide a short reason (in Persian or English) explaining why the confidence is lower than 1. "
-            "- If confidence is 1 and the value is a normal extracted value or `null`, the reason must be an empty string \"\".\n"
-            "- If the value is exactly \"N/A\", confidence must be 1 and the reason must be \"غیرمرتبط\".\n"
+            "CONDITIONAL QUESTIONS: Some questions only apply when another answer "
+            "qualifies (for example, 'at what age did you quit smoking?' only applies "
+            "if the patient smoked and later stopped). If what was said makes a "
+            "question clearly NOT APPLICABLE, set its value to exactly \"N/A\" with "
+            "confidence 1 and reason \"غیرمرتبط\". Only do this when another stated "
+            "answer rules the question out — never merely because the value was not "
+            "mentioned. The questions listed under DEPENDENCY RULES are binding: "
+            "when their condition is not satisfied by the stated answers, that "
+            "field MUST be \"N/A\".\n\n"
+            "For every field also provide a confidence score between 0 and 1 "
+            "(0 = completely guessing, 1 = absolutely certain). "
+            "The confidence must be below 1 whenever the value was hard to hear, "
+            "ambiguous, or inferred. "
+            "Additionally, for each field provide a short reason (in Persian or English) explaining "
+            "why the confidence is lower than 1. If confidence is 1, the reason must be an empty string."
         )
         return prompt
 
@@ -635,8 +699,7 @@ class PromptGenerator:
         
         mime_type = mime_type_map.get(file_ext, 'audio/wav')
         
-        # For WebM files, Gemini 1.5+ supports them natively
-        # No conversion needed!
+
         with open(audio_path, "rb") as f:
             audio_bytes = f.read()
         
@@ -655,19 +718,129 @@ class PromptGenerator:
                 config=GenerateContentConfig(
                     response_mime_type="application/json",
                     response_schema=schema,
-                    thinking_config=ThinkingConfig(
-                        thinking_level="minimal"
-                    ),
+                    thinking_config=ThinkingConfig(thinking_level="minimal"),
                 ),
             )
 
         response = _run_with_failover(_call, config.AUDIO_MODEL)
-        
+
         print("\n=== RAW RESPONSE ===")
         try:
             print(json.dumps(json.loads(response.text), indent=2, ensure_ascii=False))
         except Exception:
             print(response.text)
         print("=== END RAW ===\n")
-        
+
         return json.loads(response.text)
+
+    @staticmethod
+    def _health_schema():
+        return {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string", "description": "2-3 sentence Persian closing note from the reviewing physician"},
+                "health_score": {"type": "integer", "description": "0-100 overall health assessment based strictly on the data"},
+                "overall_status": {"type": "string", "enum": ["good", "watch", "attention"]},
+                "sections": {
+                    "type": "array",
+                    "description": "Clinical domains found in the questionnaire (max 8)",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string", "description": "Persian domain name, e.g. قلب و عروق"},
+                            "status": {"type": "string", "enum": ["good", "watch", "attention"]},
+                            "points": {"type": "array", "items": {"type": "string"}, "description": "Precise clinical findings, each referencing the specific answer"},
+                        },
+                        "required": ["title", "status", "points"],
+                    },
+                },
+                "start_doing": {"type": "array", "items": {"type": "string"}},
+                "stop_doing": {"type": "array", "items": {"type": "string"}},
+                "keep_doing": {"type": "array", "items": {"type": "string"}},
+                "when_to_see_doctor": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary", "health_score", "overall_status", "sections", "start_doing", "stop_doing", "keep_doing", "when_to_see_doctor"],
+        }
+
+    @staticmethod
+    def _build_health_prompt(user_info, qa_lines):
+        name = f"{user_info.get('first_name') or ''} {user_info.get('last_name') or ''}".strip()
+        sex_fa = {"male": "مرد", "female": "زن"}.get(user_info.get("sex"), user_info.get("sex") or "نامشخص")
+        age = user_info.get("age")
+        birth = user_info.get("birth_date_shamsi")
+
+        demo = f"بیمار: {name or 'نامشخص'} | جنسیت: {sex_fa} | سن: {age if age is not None else 'نامشخص'}"
+        if birth:
+            demo += f" | تاریخ تولد (شمسی): {birth}"
+
+        parts = [
+            "نقش تو: پزشک داخلی باتجربه‌ای که نتایج پرسشنامه غربالگری سلامت یک فرد را دقیق بررسی می‌کند — همان‌طور که جواب آزمایش خون را خط به خط می‌خواند.",
+            "هر پاسخ را با دانش بالینی بسنج، مقادیر را با دامنه‌های طبیعی مقایسه کن، پاسخ‌های مرتبط را با هم ترکیب و تحلیل کن (مثلاً سیگار + سابقه خانوادگی + فشار خون)، و الگوهای پنهان را پیدا کن.",
+            "",
+            f"مشخصات بیمار: {demo}",
+            "",
+            "پاسخ‌های پرسشنامه (کد سوال، متن سوال، پاسخِ رمزگشایی‌شده، معنی گزینه‌ها). تاریخ‌ها شمسی هستند (مثلاً 1362 یعنی سال ۱۳۶۲ خورشیدی):",
+        ]
+        parts.extend(qa_lines)
+
+        parts.append("""
+قواعد تحلیل:
+1. سطر به سطر: هر پاسخ را تحلیل کن؛ مقدار طبیعی است یا نه؟ الگوی خطر دارد؟ با پاسخ دیگری تناقض دارد؟
+2. ترکیب‌ها: پاسخ‌های مرتبط را با هم بسنج و پیامدهای ترکیبی را بگو.
+3. ارجاع دقیق: هر یافته باید مستقیماً به کد سوال یا پاسخ مشخصی ارجاع بدهد. یافته کلی و بی‌ربط مطلقاً ممنوع است.
+4. واقع‌بینی: اگر داده برای قضاوت کافی نیست، صادقانه بنویس «نیاز به اندازه‌گیری یا آزمایش تکمیلی دارد» به‌جای حدس زدن. هیچ علامت، بیماری یا عددی از خودت نساز.
+5. «N/A» یعنی سوال به این بیمار مرتبط نبوده — هرگز آن را مشکل تلقی نکن.
+6. لحن: گزارش پزشک به بیمار — مطمئن، تخصصی، شفاف، آرام. نه وحشت‌آفرین، نه سطحی و شعاری. از کلمات ترسناک پرهیز کن؛ به‌جای «خطر» بنویس «قابل پیگیری» یا «نیاز به توجه».
+7. مهم: هیچ‌جا به هوش مصنوعی، مدل زبانی، سیستم یا نحوه تولید این گزارش اشاره نکن. گزارش باید دقیقاً مثل گزارشی باشد که یک پزشک نوشته است.
+8. از کلی‌گویی خالی (مثل «حالتان خوب است، مراقب باشید») پرهیز کن. هر جمله باید محتوای بالینی مشخص داشته باشد.
+9. توصیه‌ها باید عملی، مشخص و متناسب با یافته‌های همین بیمار باشند — نه توصیه‌های عمومی که برای هر کسی صادق است.
+10. تمام متن خروجی فارسی است؛ کلیدهای JSON انگلیسی می‌مانند.
+11. هدف ترساندن فرد نیست، فقط برای تحلیل کلی سلامت فرد بر نتایج پرسشنامه غربالگری است. مشکلات کوچک را در نظر نگیر.
+
+ساختار خروجی (فقط JSON معتبر):
+- summary: جمع‌بندی ۲-۳ جمله‌ای نهایی پزشک؛ صادقانه، آرام و مشخص (برای ایمیل هم استفاده می‌شود).
+- health_score: عدد ۰ تا ۱۰۰؛ ارزیابی کلی فقط بر اساس همین داده‌ها.
+- overall_status: "good" (وضعیت رضایت‌بخش)، "watch" (چند مورد قابل پیگیری)، "attention" (مواردی نیاز به توجه جدی‌تر دارند).
+- sections: تا ۸ محور بالینی که در پرسشنامه وجود دارد (مثلاً قلب و عروق، تنفس، متابولیسم و دیابت، سلامت روان و خواب، دهان و دندان، سوانح و جراحی، سبک زندگی). هر محور: title، status، points (یافته‌های دقیق با ذکر کد سوال، معنی بالینی و اینکه چرا مهم است).
+- start_doing: کارهای مشخص که باید همین حالا شروع کند (هر آیتم یک جمله عملی).
+- stop_doing: کارهایی که باید قطع یا کم کند و چرا.
+- keep_doing: چیزهایی که خوب پیش می‌رود و باید ادامه دهد.
+- when_to_see_doctor: شرایط یا علائمی که مراجعه به پزشک را ضروری می‌کند؛ فقط موارد واقعاً لازم. اگر چیزی لازم نیست، آرایه خالی.
+""")
+
+        return "\n".join(parts)
+
+    @classmethod
+    def generate_health_check(cls, user_info, qa_lines):
+        prompt = cls._build_health_prompt(user_info, qa_lines)
+        schema = cls._health_schema()
+
+        def _call(client, model):
+            cfg = GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=schema,
+                temperature=0.3,
+                thinking_config=ThinkingConfig(thinking_level="high"),
+            )
+            return client.models.generate_content(model=model, contents=[prompt], config=cfg)
+
+        resp = _run_with_failover(_call, config.HEALTH_MODEL)
+        print("\n=== HEALTH RAW ===\n", resp.text[:4000], "\n=== END HEALTH ===\n")
+        try:
+            data = json.loads(resp.text)
+        except Exception as e:
+            print(f"[health] parse failed: {e}")
+            data = {"summary": resp.text[:500], "health_score": None, "overall_status": "watch",
+                    "sections": [], "start_doing": [], "stop_doing": [], "keep_doing": [], "when_to_see_doctor": []}
+        # normalize
+        data["summary"] = (data.get("summary") or "").strip()
+        for k in ("start_doing", "stop_doing", "keep_doing", "when_to_see_doctor"):
+            data[k] = [str(x) for x in (data.get(k) or []) if x]
+        data["sections"] = [s for s in (data.get("sections") or []) if s and s.get("title")]
+        try:
+            data["health_score"] = int(data.get("health_score") or 0)
+        except (TypeError, ValueError):
+            data["health_score"] = None
+        if data.get("overall_status") not in ("good", "watch", "attention"):
+            data["overall_status"] = "watch"
+        return {"summary": data["summary"], "report": data, "model": config.HEALTH_MODEL, "prompt": prompt}
