@@ -92,13 +92,9 @@ async def check_section_anomalies(
         models.Question.section_id == section.section_id
     ).all()
 
-    # Dependency normalization (questions.visibility_rules): rules may
-    # reference parents recorded in other sections, so evaluate against the
-    # FULL answer set, then keep only this section's fields.
     normalized_answers, applicable_map = normalize_answers(questions, answers)
 
-    # Build metadata for applicable questions only — a non-applicable question
-    # (forced "N/A") must never be flagged by the sanity checker.
+
     questions_meta = [
         {
             "v_code": q.v_code,
@@ -111,12 +107,7 @@ async def check_section_anomalies(
         if applicable_map.get(q.v_code, True)
     ]
 
-    # Filter answers to only include the section’s v_codes + perhaps gender (A4) for cross‑consistency
     relevant_vcodes = {q.v_code for q in questions}
-    # Add gender if present (to catch male + pregnancy)
-    # if "A4" in answers:
-    #     relevant_vcodes.add("A4")
-
     filtered_answers = {v: normalized_answers[v] for v in relevant_vcodes if v in normalized_answers}
 
     transcript = None
@@ -188,8 +179,6 @@ async def check_final_anomalies(
         if q.section_id in sections_by_id
     }
 
-    # Dependency normalization (questions.visibility_rules) over the whole
-    # answer set; non-applicable questions are excluded from the check.
     normalized_answers, applicable_map = normalize_answers(
         list(vcode_to_question.values()), answers
     )
@@ -310,10 +299,6 @@ async def start_submission(
             "locked": True,
         }
 
-    # Progressive resume: reuse this patient's most recent submission for the
-    # form regardless of status, so a returning patient continues where they
-    # left off instead of starting an empty questionnaire. A completed
-    # submission is reopened to "draft" so the remaining sections can be filled.
     submission = db.query(models.Submission).filter(
         and_(
             models.Submission.user_id == user.user_id,
@@ -332,9 +317,7 @@ async def start_submission(
     db.commit()
     db.refresh(submission)
 
-    # Load any answers already saved for this submission so the UI can prefill
-    # the answered fields and mark their sections as done. Map each v_code to
-    # its section_key (via the question) for section-level progress.
+
     saved_responses = db.query(models.Response).filter(
         models.Response.submission_id == submission.submission_id
     ).order_by(
@@ -405,9 +388,6 @@ async def complete_submission(
     # Cache questions by v_code so manual-only fields still link to their question
     questions = {q.v_code: q for q in db.query(models.Question).all()}
 
-    # Dependency normalization (questions.visibility_rules): non-applicable
-    # answers are stored as "N/A"; "N/A" values on applicable questions are
-    # dropped so they don't pollute the record.
     answers, _applicable_map = normalize_answers(list(questions.values()), answers)
 
     saved = 0
@@ -452,18 +432,12 @@ async def complete_submission(
             )
         saved += 1
 
-    # Two submit modes:
-    #   partial=true  -> "ثبت و خروج": save answers, keep the submission draft.
-    #   partial=false -> "ثبت نهایی": mark completed only when every applicable
-    #                    required question has an answer (strict gate below).
     partial = bool(payload.get("partial"))
 
     if partial:
         db.flush()
         from app.services.forms import get_form_completion
         comp = get_form_completion(db, submission.user_id, submission.form_id)
-        # Everything required is already answered -> this "ثبت و خروج" is
-        # effectively a final submit: mark completed (no half-finished state).
         if comp["fully_completed"]:
             submission.status = "completed"
         else:
@@ -478,9 +452,6 @@ async def complete_submission(
             "unanswered": comp["required_total"] - comp["answered"],
         }
 
-    # Strict completion gate for ثبت نهایی: a submission may only be marked
-    # "completed" when every applicable required question of the form has an
-    # answer. Half-way submits stay "draft" (answers are kept).
     from app.services.forms import get_form_completion
     db.flush()  # make the just-saved answers visible to the completion query
     comp = get_form_completion(db, submission.user_id, submission.form_id)
@@ -590,12 +561,6 @@ async def process_voice(
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')
         confidence_map = result.get('confidence', {}) or {}
-
-        # Dependency normalization (questions.visibility_rules): merge the
-        # submission's saved answers (parents may live in sections recorded
-        # earlier) with the fresh extraction, force "N/A" for non-applicable
-        # questions and clear bogus "N/A" values, then keep only this
-        # section's keys for saving/returning.
         merged = {}
         if sub_id:
             for r in db.query(models.Response).filter(

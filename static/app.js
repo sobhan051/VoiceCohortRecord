@@ -910,7 +910,7 @@ function applyGroupedAiResults(data) {
         }
     });
 
-    // Second pass: fill in the values
+    // Second pass: fill in the values — only for grouped questions
     Object.entries(data).forEach(([vcode, val]) => {
         if (val === null || val === undefined || val === '') return;
         let baseVcode = vcode;
@@ -920,15 +920,23 @@ function applyGroupedAiResults(data) {
             baseVcode = match[1];
             idx = parseInt(match[2]);
         }
-        // If plain vcode belongs to a group, map to idx=0
+        // Check if this vcode belongs to a grouped question; skip non-grouped
+        let isGrouped = false;
         let targetVcode = vcode;
         for (const [gp, questions] of Object.entries(groupedQuestionsMap)) {
             if (questions.some(q => q.v_code === baseVcode)) {
+                isGrouped = true;
                 if (!match) targetVcode = baseVcode + '_0';
                 break;
             }
         }
+        if (!isGrouped) return;
         const inputs = document.querySelectorAll(`[data-vcode="${targetVcode}"]`);
+        const isCheckboxGroup = inputs.length > 0 && inputs[0].type === 'checkbox';
+        let checkSet = null;
+        if (isCheckboxGroup) {
+            checkSet = new Set(String(val).split(',').map(c => c.trim()).filter(Boolean));
+        }
         inputs.forEach(input => {
             if (input.type === 'radio') {
                 if (input.value == val) {
@@ -936,12 +944,22 @@ function applyGroupedAiResults(data) {
                     const lbl = input.closest('label');
                     if (lbl) lbl.classList.add('ai-updated');
                     setTimeout(() => { if (lbl) lbl.classList.remove('ai-updated'); }, 3000);
+                } else {
+                    input.checked = false;
                 }
             } else if (input.type === 'checkbox') {
-                // Not expected for grouped, but handle anyway
-                input.checked = true;
-                input.classList.add('ai-updated');
-                setTimeout(() => input.classList.remove('ai-updated'), 3000);
+                const shouldCheck = checkSet ? checkSet.has(String(input.value)) : String(input.value) === String(val).trim();
+                input.checked = shouldCheck;
+                if (shouldCheck) {
+                    input.classList.add('ai-updated');
+                    const lbl = input.closest('label');
+                    if (lbl) lbl.classList.add('ai-updated');
+                }
+                setTimeout(() => {
+                    input.classList.remove('ai-updated');
+                    const lbl = input.closest('label');
+                    if (lbl) lbl.classList.remove('ai-updated');
+                }, 3000);
             } else {
                 input.value = String(val);
                 input.classList.add('ai-updated');
@@ -1728,36 +1746,38 @@ function applyAiResults(data) {
             return;
         }
 
-        if (typeof val === 'string' && val.includes(',')) {
-            const codes = val.split(',').map(c => c.trim());
-            codes.forEach(code => {
-                const checkboxes = document.querySelectorAll(
-                    `input[type="checkbox"][data-vcode="${vCode}"][value="${code}"]`
-                );
-                checkboxes.forEach(cb => {
-                    cb.checked = true;
-                    cb.closest('label').classList.add('ai-updated');
-                });
-                setTimeout(() => {
-                    checkboxes.forEach(cb => cb.closest('label').classList.remove('ai-updated'));
-                }, 3000);
+        const inputsForVCode = document.querySelectorAll(`[data-vcode="${vCode}"]`);
+        const isMultiSelect = inputsForVCode.length > 0 && inputsForVCode[0].type === 'checkbox';
+        if (isMultiSelect) {
+            const codesSet = new Set(String(val).split(',').map(c => c.trim()).filter(Boolean));
+            inputsForVCode.forEach(input => {
+                if (input.type === 'checkbox') {
+                    const shouldCheck = codesSet.has(input.value);
+                    input.checked = shouldCheck;
+                    const lbl = input.closest('label');
+                    if (shouldCheck && lbl) lbl.classList.add('ai-updated');
+                    setTimeout(() => { if (lbl) lbl.classList.remove('ai-updated'); }, 3000);
+                }
             });
         } else {
             const inputs = document.querySelectorAll(`[data-vcode="${vCode}"]`);
             inputs.forEach(input => {
                 if (input.type === 'radio') {
-                    if (input.value == val) {
-                        input.checked = true;
-                        input.closest('label').classList.add('ai-updated');
+                    const shouldCheck = input.value == val;
+                    input.checked = shouldCheck;
+                    const lbl = input.closest('label');
+                    if (lbl) {
+                        if (shouldCheck) lbl.classList.add('ai-updated');
+                        setTimeout(() => lbl.classList.remove('ai-updated'), 3000);
                     }
                 } else {
-                    input.value = val;
+                    input.value = String(val);
                     input.classList.add('ai-updated');
+                    setTimeout(() => {
+                        input.classList.remove('ai-updated');
+                        if (input.closest('label')) input.closest('label').classList.remove('ai-updated');
+                    }, 3000);
                 }
-                setTimeout(() => {
-                    input.classList.remove('ai-updated');
-                    if (input.closest('label')) input.closest('label').classList.remove('ai-updated');
-                }, 3000);
             });
         }
     });
