@@ -202,25 +202,26 @@ async function loadUserDashboard() {
                                         <th class="text-right p-4 text-sm font-bold text-gray-600">فرم</th>
                                         <th class="text-right p-4 text-sm font-bold text-gray-600">وضعیت</th>
                                         <th class="text-right p-4 text-sm font-bold text-gray-600">تاریخ</th>
-                                        <th class="text-right p-4 text-sm font-bold text-gray-600">تعداد پاسخ</th>
                                         <th class="text-right p-4 text-sm font-bold text-gray-600">عملیات</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    ${submissions.map(sub => `
+                                    ${submissions.map(sub => {
+                                        const done = sub.fully_completed || sub.status === 'completed';
+                                        return `
                                         <tr class="border-b hover:bg-gray-50 transition">
                                             <td class="p-4 text-sm">${sub.form_name}</td>
                                             <td class="p-4">
-                                                <span class="px-2 py-1 rounded-full text-xs ${sub.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}">
-                                                    ${sub.status === 'completed' ? 'تکمیل شده' : 'پیش‌نویس'}
+                                                <span class="px-2 py-1 rounded-full text-xs ${done ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}">
+                                                    ${done ? 'تکمیل شده' : 'پیش‌نویس'}
                                                 </span>
                                             </td>
                                             <td class="p-4 text-sm">${sub.updated_at ? new Date(sub.updated_at).toLocaleDateString('fa-IR') : '-'}</td>
-                                            <td class="p-4 text-sm">${sub.response_count} از ${sub.total_questions || '?'}</td>
                                             <td class="p-4">
-                                                ${sub.status === 'draft' ? `<a href="/form?form_id=${sub.form_id}" class="text-blue-600 hover:text-blue-800 text-sm">ادامه</a>` : `<span class="inline-flex items-center gap-1 text-gray-400 text-sm"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> تکمیل شده</span>`}
+                                                ${done ? `<span class="inline-flex items-center gap-1 text-gray-400 text-sm"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg> تکمیل شده</span>` : `<a href="/form?form_id=${sub.form_id}" class="text-blue-600 hover:text-blue-800 text-sm">ادامه</a>`}
                                             </td>
-                                        </tr>`).join('')}
+                                        </tr>`;
+                                    }).join('')}
                                 </tbody>
                             </table>
                         </div>
@@ -342,14 +343,13 @@ async function loadAdminSubmissions(container) {
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">فرم</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">تاریخ</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">وضعیت</th>
-                                <th class="text-right p-4 text-sm font-bold text-gray-600">تعداد پاسخ</th>
                                 <th class="text-right p-4 text-sm font-bold text-gray-600">عملیات</th>
                             </tr>
                         </thead>
                         <tbody>`;
 
         if (submissions.length === 0) {
-            html += `<tr><td colspan="7" class="text-center p-8 text-gray-500">هیچ پرسشنامه‌ای یافت نشد</td></tr>`;
+            html += `<tr><td colspan="6" class="text-center p-8 text-gray-500">هیچ پرسشنامه‌ای یافت نشد</td></tr>`;
         } else {
             submissions.forEach(sub => {
                 html += `
@@ -363,7 +363,6 @@ async function loadAdminSubmissions(container) {
                                 ${sub.status === 'completed' ? 'تکمیل شده' : 'پیش‌نویس'}
                             </span>
                         </td>
-                        <td class="p-4 text-sm">${sub.response_count}</td>
                         <td class="p-4 flex gap-2">
                             <button onclick="viewAdminSubmissionForm('${sub.form_id}', '${sub.submission_id}')" class="text-blue-600 hover:text-blue-800 text-sm">بررسی</button>
                             <button onclick="deleteAdminSubmission('${sub.submission_id}')" class="text-red-600 hover:text-red-800 text-sm">حذف</button>

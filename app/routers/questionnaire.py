@@ -459,15 +459,20 @@ async def complete_submission(
     partial = bool(payload.get("partial"))
 
     if partial:
-        submission.status = "draft"
+        db.flush()
+        from app.services.forms import get_form_completion
+        comp = get_form_completion(db, submission.user_id, submission.form_id)
+        # Everything required is already answered -> this "ثبت و خروج" is
+        # effectively a final submit: mark completed (no half-finished state).
+        if comp["fully_completed"]:
+            submission.status = "completed"
+        else:
+            submission.status = "draft"
         submission.updated_at = datetime.now()
         db.commit()
-        from app.services.forms import get_form_completion
-        db.flush()
-        comp = get_form_completion(db, submission.user_id, submission.form_id)
         return {
             "success": True,
-            "status": "draft",
+            "status": submission.status,
             "saved": saved,
             "submission_id": str(sub_id),
             "unanswered": comp["required_total"] - comp["answered"],

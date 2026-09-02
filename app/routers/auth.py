@@ -177,19 +177,13 @@ async def dashboard(user_id: str, db: Session = Depends(get_db)):
         completed_count = 0
         draft_count = 0
         submissions_list = []
+        from app.services.forms import get_form_completion
         for sub in submissions:
             form = forms.get(sub.form_id)
-            response_count = db.query(models.Response).filter(
-                models.Response.submission_id == sub.submission_id
-            ).count()
-
-            # Count total questions in this form (across all sections)
-            total_questions = db.query(func.count(models.Question.question_id)).join(
-                models.Section,
-                models.Question.section_id == models.Section.section_id,
-            ).filter(
-                models.Section.form_id == sub.form_id
-            ).scalar() or 0
+            # Strict per-form completion: only applicable *required* questions
+            # count — conditionally hidden questions are excluded and "N/A"
+            # counts as answered. Keeps تعداد پاسخ truthful.
+            comp = get_form_completion(db, uid, sub.form_id)
 
             submissions_list.append({
                 "submission_id": str(sub.submission_id),
@@ -198,8 +192,7 @@ async def dashboard(user_id: str, db: Session = Depends(get_db)):
                 "status": sub.status,
                 "created_at": sub.created_at.isoformat() if sub.created_at else None,
                 "updated_at": sub.updated_at.isoformat() if sub.updated_at else None,
-                "response_count": response_count,
-                "total_questions": total_questions,
+                "fully_completed": comp["fully_completed"],
             })
             if sub.status == "completed":
                 completed_count += 1

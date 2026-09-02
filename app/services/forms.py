@@ -29,7 +29,14 @@ def _section_applicable(section, answers):
 def get_form_completion(db, user_id: int, form_id: int):
     """How complete is this user's latest submission for the form.
 
-    Returns {required_total, answered, fully_completed, has_submission}.
+    Returns:
+      required_total / answered       — applicable REQUIRED questions (the
+                                        completion gate; optional never blocks)
+      applicable_total / applicable_answered — ALL applicable questions
+                                        (required + optional) — matches what
+                                        the user sees in the form UI, used for
+                                        display
+      fully_completed, has_submission
     """
     submission = (
         db.query(models.Submission)
@@ -51,13 +58,16 @@ def get_form_completion(db, user_id: int, form_id: int):
         db.query(models.Question)
         .join(models.Section, models.Question.section_id == models.Section.section_id)
         .filter(models.Section.form_id == form_id)
-        .filter(models.Question.is_required.is_(True))
         .order_by(models.Question.sort_order)
         .all()
     )
 
     if not questions:
-        return {"required_total": 0, "answered": 0, "fully_completed": True, "has_submission": submission is not None}
+        return {
+            "required_total": 0, "answered": 0,
+            "applicable_total": 0, "applicable_answered": 0,
+            "fully_completed": True, "has_submission": submission is not None,
+        }
 
     answers = {}
     if submission:
@@ -72,21 +82,30 @@ def get_form_completion(db, user_id: int, form_id: int):
             answers[r.v_code] = val
 
     required = 0
-    answered = 0
+    answered_required = 0
+    applicable = 0
+    answered_applicable = 0
     for q in questions:
         section = next((s for s in sections if s.section_id == q.section_id), None)
         if section and not _section_applicable(section, answers):
             continue
         if not is_applicable(getattr(q, "visibility_rules", None), answers):
             continue
-        required += 1
-        if _has_answer(q.v_code, answers):
-            answered += 1
+        has = _has_answer(q.v_code, answers)
+        applicable += 1
+        if has:
+            answered_applicable += 1
+        if q.is_required:
+            required += 1
+            if has:
+                answered_required += 1
 
     return {
         "required_total": required,
-        "answered": answered,
-        "fully_completed": required > 0 and answered >= required,
+        "answered": answered_required,
+        "applicable_total": applicable,
+        "applicable_answered": answered_applicable,
+        "fully_completed": required > 0 and answered_required >= required,
         "has_submission": submission is not None,
     }
 

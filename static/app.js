@@ -1809,12 +1809,8 @@ document.addEventListener('change', function(event) {
     updateProgressPanel();
 });
 
-// Sanity check runs at most once per submission session. If warnings are found
-// they're shown and the user can edit + submit again — the second click saves
-// directly without re-running the check (no confirm/alert loop).
+
 let finalSanityDone = false;
-// Set by updateProgressPanel: true only when every visible question is answered.
-// False -> the button is "ثبت و خروج" (partial draft save); true -> "ثبت نهایی".
 let allQuestionsAnswered = false;
 
 async function submitFinalForm() {
@@ -1834,8 +1830,6 @@ async function submitFinalForm() {
     }
 
     try {
-        // Final whole-form cross-section sanity pass — only for ثبت نهایی
-        // (a partial draft save doesn't need the LLM quality pass).
         if (!partial && !finalSanityDone) {
             const finalResp = await fetch('/check-final-anomalies', {
                 method: 'POST',
@@ -1876,8 +1870,6 @@ async function submitFinalForm() {
         Object.entries(sessionContext).forEach(([key, val]) => {
             const match = key.match(/^(.+?)_(\d+)$/);
             if (match) {
-                // Grouped: send as { base_vcode: [val0, val1, ...], group_pairs: { base_vcode: group_pair } }
-                // Actually, keep indexed keys so backend knows the group structure
                 answersPayload[key] = val;
             } else {
                 answersPayload[key] = val;
@@ -1896,8 +1888,6 @@ async function submitFinalForm() {
         });
         const data = await res.json();
         if (data.error) {
-            // Only reachable in ثبت نهایی mode if the server disagrees with the
-            // client's answered count (e.g. dependency changed answers off-screen).
             if (data.unanswered) {
                 allQuestionsAnswered = false;
                 updateProgressPanel();
@@ -1908,8 +1898,7 @@ async function submitFinalForm() {
             return;
         }
         if (data.status === 'draft') {
-            // ثبت و خروج: answers saved, form still open for later
-            try { sessionStorage.setItem('vcr_flash', `پاسخ‌های شما ذخیره شد (${data.unanswered} سوال باقی مانده) — از داشبورد می‌توانید ادامه دهید`); } catch (e) { /* ignore */ }
+            try { sessionStorage.setItem('vcr_flash', `پاسخ‌های شما ذخیره شد  — از داشبورد می‌توانید به پاسخ دادن ادامه دهید.`); } catch (e) { /* ignore */ }
             currentSubmissionId = null;
             finalSanityDone = false;
             window.location.href = '/dashboard';

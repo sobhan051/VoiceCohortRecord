@@ -88,11 +88,6 @@ async def admin_submissions(
             except (ValueError, TypeError):
                 pass
 
-        # Count responses
-        response_count = db.query(models.Response).filter(
-            models.Response.submission_id == sub.submission_id
-        ).count()
-
         result.append({
             "submission_id": str(sub.submission_id),
             "form_id": str(sub.form_id) if sub.form_id else None,
@@ -101,7 +96,6 @@ async def admin_submissions(
             "national_code": user.national_code if user else "N/A",
             "status": sub.status,
             "created_at": sub.created_at.isoformat() if sub.created_at else None,
-            "response_count": response_count
         })
 
     return result
