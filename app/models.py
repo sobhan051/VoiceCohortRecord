@@ -65,6 +65,7 @@ class Submission(Base):
     status = Column(String(20), default='draft')
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now())
+    token_used = Column(String(50), default="0,0")
 
 
 class Response(Base):

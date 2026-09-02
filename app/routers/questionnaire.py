@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.core.config import UPLOAD_DIR
 from app.db.session import get_db
-from app.services.ai_engine import PromptGenerator
+from app.services.ai_engine import PromptGenerator, get_last_usage
 from app.services.visibility import normalize_answers
 from app.services.responses import upsert_response, delete_section_responses
 
@@ -25,6 +25,22 @@ from app.services.health_check import (
 )
 
 router = APIRouter()
+
+
+def accumulate_token_usage(current, usage):
+    """Add an (input, output) usage tuple onto the stored "input,output" string.
+
+    ``current`` is the existing submissions.token_used value (or None).
+    Returns the new "input,output" string with the usage SUMMED onto whatever
+    was already recorded for this submission.
+    """
+    try:
+        parts = str(current or "0,0").split(",")
+        cur_in = int(parts[0]) if parts and parts[0].strip() else 0
+        cur_out = int(parts[1]) if len(parts) > 1 and parts[1].strip() else 0
+    except (ValueError, TypeError):
+        cur_in = cur_out = 0
+    return f"{cur_in + usage[0]},{cur_out + usage[1]}"
 
 
 @router.get("/get-form-structure")
@@ -133,6 +149,21 @@ async def check_section_anomalies(
         warnings = PromptGenerator.check_anomalies(
             filtered_answers, questions_meta, confidence_reasons, transcript
         )
+        # Token usage of this sanity check, stored as "input,output" on the
+        # submission — summed onto any previously recorded usage. Best-effort
+        # bookkeeping: never let it fail the anomaly check itself.
+        if submission_id:
+            usage = get_last_usage()
+            if usage:
+                try:
+                    sub = db.query(models.Submission).filter(
+                        models.Submission.submission_id == int(submission_id)
+                    ).first()
+                    if sub:
+                        sub.token_used = accumulate_token_usage(sub.token_used, usage)
+                        db.commit()
+                except (ValueError, TypeError):
+                    db.rollback()
         return {"warnings": warnings}
     except Exception as e:
         print(f"Per‑section anomaly check error: {e}")
@@ -222,6 +253,12 @@ async def check_final_anomalies(
         warnings = PromptGenerator.check_final_anomalies(
             normalized_answers, all_questions_meta, transcripts, confidence_reasons
         )
+        # Token usage of this final sanity pass, stored as "input,output" —
+        # summed onto any previously recorded usage.
+        usage = get_last_usage()
+        if usage:
+            submission.token_used = accumulate_token_usage(submission.token_used, usage)
+            db.commit()
         return {"warnings": warnings}
     except Exception as e:
         print(f"Final anomaly check error: {e}")
@@ -534,14 +571,16 @@ async def process_voice(
 
     # Resolve the target submission
     sub_id = None
+    submission = None
     if submission_id:
         try:
             sub_id = int(submission_id)
         except (ValueError, TypeError):
             return {"error": "شناسه ثبت نامعتبر است"}
-        if not db.query(models.Submission).filter(
+        submission = db.query(models.Submission).filter(
             models.Submission.submission_id == sub_id
-        ).first():
+        ).first()
+        if not submission:
             return {"error": "ثبت مورد نظر یافت نشد"}
 
     questions = db.query(models.Question).filter(
@@ -558,6 +597,12 @@ async def process_voice(
 
     try:
         result = PromptGenerator.process_audio(file_path, questions)
+        # Token usage of the full voice process (audio sent -> JSON responses),
+        # stored as "input,output" — SUMMED onto any previously recorded usage.
+        if submission is not None:
+            usage = get_last_usage()
+            if usage:
+                submission.token_used = accumulate_token_usage(submission.token_used, usage)
         extracted_data = result.get('data', {})
         transcript_text = result.get('transcript', '')
         confidence_map = result.get('confidence', {}) or {}

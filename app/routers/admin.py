@@ -96,6 +96,7 @@ async def admin_submissions(
             "national_code": user.national_code if user else "N/A",
             "status": sub.status,
             "created_at": sub.created_at.isoformat() if sub.created_at else None,
+            "token_used": sub.token_used,
         })
 
     return result
@@ -561,6 +562,20 @@ async def admin_delete_submission(submission_id: str, db: Session = Depends(get_
     db.delete(sub)
     db.commit()
     return {"success": True}
+
+
+@router.post("/submissions/{submission_id}/reset-tokens")
+async def admin_reset_submission_tokens(submission_id: str, db: Session = Depends(get_db)):
+    """Reset the accumulated token usage of a submission back to zero"""
+    uid = _int(submission_id)
+    if not uid:
+        return {"error": "Invalid submission ID"}
+    sub = db.query(models.Submission).filter(models.Submission.submission_id == uid).first()
+    if not sub:
+        return {"error": "Submission not found"}
+    sub.token_used = "0,0"
+    db.commit()
+    return {"success": True, "token_used": sub.token_used}
 
 
 @router.delete("/responses/{response_id}")
