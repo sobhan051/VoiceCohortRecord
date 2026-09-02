@@ -1148,9 +1148,11 @@ function updateProgressPanel() {
                 const vc = q.v_code + '_0';
                 if (countedVcodes.has(vc)) return;
                 countedVcodes.add(vc);
-                // Pending (dependency not yet resolved) grouped fields don't count
                 const input0 = document.querySelector(`[data-vcode="${vc}"]`);
-                if (input0 && input0.disabled && input0.dataset.na !== '1') return;
+                
+                if (input0 && input0.dataset.na === '1') { answered++; return; }
+
+                if (input0 && input0.disabled) return;
                 const val = sessionContext[vc];
                 if (val !== undefined && val !== null && val !== '') {
                     answered++;
