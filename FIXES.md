@@ -15,8 +15,8 @@
 - [x] ask for age instead of birthdate
 - [X] visibility_check between forms
 - [X] make export section in admin dashboard
-
-- [ ] test vitamin pills tracker
+- [x] test vitamin pills tracker
 - [ ] fix Sanity check is doing Advice? we need it just to check to make sure the user said the right answer. 
 - [ ] get the fonts and other stuff for UI offline
 - [ ] هیچکدام option should disable the other options (small bug)
+- [x] only 1 question and then submitting would make the whole section تکمیل شد

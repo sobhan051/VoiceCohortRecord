@@ -452,6 +452,44 @@ async def complete_submission(
             )
         saved += 1
 
+    # Two submit modes:
+    #   partial=true  -> "ثبت و خروج": save answers, keep the submission draft.
+    #   partial=false -> "ثبت نهایی": mark completed only when every applicable
+    #                    required question has an answer (strict gate below).
+    partial = bool(payload.get("partial"))
+
+    if partial:
+        submission.status = "draft"
+        submission.updated_at = datetime.now()
+        db.commit()
+        from app.services.forms import get_form_completion
+        db.flush()
+        comp = get_form_completion(db, submission.user_id, submission.form_id)
+        return {
+            "success": True,
+            "status": "draft",
+            "saved": saved,
+            "submission_id": str(sub_id),
+            "unanswered": comp["required_total"] - comp["answered"],
+        }
+
+    # Strict completion gate for ثبت نهایی: a submission may only be marked
+    # "completed" when every applicable required question of the form has an
+    # answer. Half-way submits stay "draft" (answers are kept).
+    from app.services.forms import get_form_completion
+    db.flush()  # make the just-saved answers visible to the completion query
+    comp = get_form_completion(db, submission.user_id, submission.form_id)
+    if not comp["fully_completed"]:
+        remaining = comp["required_total"] - comp["answered"]
+        submission.status = "draft"
+        submission.updated_at = datetime.now()
+        db.commit()
+        return {
+            "error": f"{remaining} سوال الزامی هنوز بی‌پاسخ است — برای ثبت نهایی باید به همه سوالات الزامی پاسخ دهید",
+            "unanswered": remaining,
+            "status": "draft",
+        }
+
     submission.status = "completed"
     submission.updated_at = datetime.now()
     db.commit()

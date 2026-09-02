@@ -358,7 +358,9 @@ async function autoStartFromSession() {
 }
 
 // ---------- Progressive resume ----------
-// Prefill answers saved on a previous visit and mark answered sections "done".
+// Prefill answers saved on a previous visit. Section done-badges are synced
+// strictly by updateProgressPanel -> updateSectionDoneBadges (all questions
+// answered), NOT by "this section has any saved answer".
 function loadExistingProgress(data) {
     const answers = data.answers || {};
     const confidence = data.confidence || {};
@@ -378,16 +380,13 @@ function loadExistingProgress(data) {
         updateQuestionVisibility();
     }
 
-    answeredSections.forEach(markSectionAnswered);
-
     if (answeredSections.length > 0) {
         document.getElementById('status-badge').textContent =
-            `ادامه پرسشنامه (${answeredSections.length} بخش تکمیل‌شده)`;
+            `ادامه پرسشنامه (${answeredSections.length} بخش دارای پاسخ)`;
     }
 }
 
-// Visually flag a section the patient already completed. The mic stays enabled
-// so they can re-record to correct an answer.
+// Visually flag a section whose questions are ALL answered.
 function markSectionAnswered(sectionKey) {
     const sectionEl = document.getElementById(`sect-${sectionKey}`);
     if (!sectionEl) return;
@@ -398,6 +397,28 @@ function markSectionAnswered(sectionKey) {
         badge.innerHTML = '<span class="inline-flex items-center gap-1"><svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg> تکمیل شد</span>';
         badge.classList.add('section-done-badge');
     }
+}
+
+// Sync the "تکمیل شد" badges with the strict per-section progress counts —
+// a section with ANY unanswered question must NOT show as done, even if the
+// user partially filled it and clicked ثبت و خروج earlier. Called from
+// updateProgressPanel so the badges stay truthful on every answer change.
+function updateSectionDoneBadges() {
+    document.querySelectorAll('section[id^="sect-"]').forEach(sectionEl => {
+        const sectionKey = sectionEl.id.replace('sect-', '');
+        const data = sectionProgressData[sectionKey];
+        const complete = !!(data && data.total > 0 && data.answered >= data.total);
+        const badge = document.getElementById(`badge-${sectionKey}`);
+        if (complete) {
+            markSectionAnswered(sectionKey);
+        } else {
+            sectionEl.classList.remove('section-answered');
+            if (badge && badge.classList.contains('section-done-badge')) {
+                badge.classList.remove('section-done-badge');
+                badge.innerHTML = '';
+            }
+        }
+    });
 }
 
 // ---------- Floating Stop Button & Volume Meter ----------
@@ -1154,18 +1175,32 @@ function updateProgressPanel() {
         );
     }
 
-    // Update submit button state
+    // Update submit button state — two visual modes:
+    //   incomplete -> gray "ثبت و خروج" (saves progress, stays draft)
+    //   all answered -> green "ثبت نهایی" (server marks the form completed)
     const submitBtn = document.getElementById('panel-submit-btn');
     if (submitBtn) {
-        submitBtn.disabled = totalAnswered === 0;
-        submitBtn.textContent = totalAnswered === 0 ? 'هیچ پاسخی ثبت نشده' : `ثبت نهایی (${totalAnswered})`;
-        // Re-wrap with icon
-        if (totalAnswered > 0) {
+        const allAnswered = totalQuestions > 0 && totalAnswered >= totalQuestions;
+        if (totalAnswered === 0) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = 'هیچ پاسخی ثبت نشده';
+        } else if (allAnswered) {
+            submitBtn.disabled = false;
+            submitBtn.className = submitBtn.className.replace(/bg-\S+ hover:bg-\S+/g, 'bg-emerald-600 hover:bg-emerald-700');
             submitBtn.innerHTML = `<span class="flex items-center justify-center gap-2">
                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                 </svg>
                 ثبت نهایی
+            </span>`;
+        } else {
+            submitBtn.disabled = false;
+            submitBtn.className = submitBtn.className.replace(/bg-\S+ hover:bg-\S+/g, 'bg-slate-500 hover:bg-slate-600');
+            submitBtn.innerHTML = `<span class="flex items-center justify-center gap-2">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                </svg>
+                ثبت و خروج (${totalAnswered} از ${totalQuestions})
             </span>`;
         }
     }
@@ -1181,6 +1216,10 @@ function updateProgressPanel() {
             badgeEl.className = 'bg-blue-50 text-blue-600 px-3 sm:px-4 py-2 rounded-full text-xs sm:text-sm font-medium whitespace-nowrap';
         }
     }
+
+    // Keep the per-section "تکمیل شد" badges truthful (only fully-answered
+    // sections show the green done state).
+    updateSectionDoneBadges();
 }
 
 function scrollToSection(sectionKey) {
@@ -1477,8 +1516,9 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
             applyAiResults(result.data);
 
             updateQuestionVisibility();
-            markSectionAnswered(sectionKey);
             updateProgressPanel();
+            // (updateProgressPanel -> updateSectionDoneBadges marks this
+            // section "تکمیل شد" only if ALL its questions are now answered)
             
             // Clear stored audio on success
             delete lastAudioBySection[sectionKey];
@@ -1773,6 +1813,9 @@ document.addEventListener('change', function(event) {
 // they're shown and the user can edit + submit again — the second click saves
 // directly without re-running the check (no confirm/alert loop).
 let finalSanityDone = false;
+// Set by updateProgressPanel: true only when every visible question is answered.
+// False -> the button is "ثبت و خروج" (partial draft save); true -> "ثبت نهایی".
+let allQuestionsAnswered = false;
 
 async function submitFinalForm() {
     if (!currentSubmissionId) {
@@ -1780,16 +1823,20 @@ async function submitFinalForm() {
         return;
     }
 
+    const partial = !allQuestionsAnswered;
     const submitBtn = document.getElementById('panel-submit-btn');
-    const originalLabel = submitBtn ? submitBtn.textContent : '';
     if (submitBtn) {
         submitBtn.disabled = true;
-        submitBtn.textContent = finalSanityDone ? 'در حال ذخیره...' : 'در حال بررسی...';
+        submitBtn.innerHTML = `<span class="flex items-center justify-center gap-2">
+            <svg class="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+            ${partial ? 'در حال ذخیره...' : 'در حال بررسی...'}
+        </span>`;
     }
 
     try {
-        // Final whole-form cross-section sanity pass — only the first click.
-        if (!finalSanityDone) {
+        // Final whole-form cross-section sanity pass — only for ثبت نهایی
+        // (a partial draft save doesn't need the LLM quality pass).
+        if (!partial && !finalSanityDone) {
             const finalResp = await fetch('/check-final-anomalies', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1844,11 +1891,28 @@ async function submitFinalForm() {
                 submission_id: currentSubmissionId,
                 answers: answersPayload,
                 confidence: sessionConfidence,
+                partial: partial,
             })
         });
         const data = await res.json();
         if (data.error) {
+            // Only reachable in ثبت نهایی mode if the server disagrees with the
+            // client's answered count (e.g. dependency changed answers off-screen).
+            if (data.unanswered) {
+                allQuestionsAnswered = false;
+                updateProgressPanel();
+                alert(`ثبت نهایی ممکن نیست: ${data.error}`);
+                return;
+            }
             alert(`خطا در ثبت نهایی: ${data.error}`);
+            return;
+        }
+        if (data.status === 'draft') {
+            // ثبت و خروج: answers saved, form still open for later
+            try { sessionStorage.setItem('vcr_flash', `پاسخ‌های شما ذخیره شد (${data.unanswered} سوال باقی مانده) — از داشبورد می‌توانید ادامه دهید`); } catch (e) { /* ignore */ }
+            currentSubmissionId = null;
+            finalSanityDone = false;
+            window.location.href = '/dashboard';
             return;
         }
         let msg = `اطلاعات با موفقیت ثبت شد. (${data.saved} پاسخ ذخیره شد)`;
@@ -1873,7 +1937,8 @@ async function submitFinalForm() {
     } finally {
         if (submitBtn) {
             submitBtn.disabled = false;
-            submitBtn.textContent = originalLabel;
+            // Rebuild the two-state button (icon/color/label) from progress data.
+            updateProgressPanel();
         }
     }
 }
