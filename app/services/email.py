@@ -14,6 +14,14 @@ def send_health_email(to_email: str, summary: str, link: str) -> dict | None:
     if not config.BREVO_API_KEY:
         print("[email] BREVO_API_KEY not set — skipping")
         return None
+    # The link target is frozen inside Brevo's tracking redirect at send time;
+    # a bad base URL here means a permanently broken email link. Normalize and
+    # sanity-check before sending so misconfiguration is visible in the logs.
+    link = (link or "").strip().strip('"').strip("'").strip()
+    if not link.lower().startswith(("http://", "https://")):
+        print(f"[email] WARNING: link is not an absolute http(s) URL: {link!r} — "
+              "check the APP_BASE_URL environment variable")
+    print(f"[email] checkup link: {link}")
     html = f"""
     <div dir="rtl" style="font-family: Vazirmatn, Tahoma, sans-serif; line-height:1.8; color:#1f2937; max-width:600px; margin:auto;">
       <h2 style="color:#2563eb;">خلاصه چکاپ سلامت شما</h2>
