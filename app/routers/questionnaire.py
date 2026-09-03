@@ -486,6 +486,29 @@ def start_submission(
     }
 
 
+def _maybe_trigger_health_check(db, background_tasks, user_id):
+    """Queue the AI health check when every form is complete and none exists.
+
+    Idempotent: skipped when a HealthCheck row already exists, and the queue
+    dedupes per user. Returns the ``health_check`` payload fragment for the
+    API response, or None.
+    """
+    try:
+        existing = (
+            db.query(models.HealthCheck)
+            .filter(models.HealthCheck.user_id == user_id)
+            .first()
+        )
+        if existing:
+            return {"check_id": str(existing.check_id), "existing": True}
+        if is_health_check_eligible(db, user_id):
+            if queue_user_health_check(background_tasks, user_id):
+                return {"status": "queued"}
+    except Exception as e:
+        print(f"[health trigger] failed: {e}")
+    return None
+
+
 @router.post("/complete-submission")
 def complete_submission(
     payload: dict,
@@ -570,13 +593,21 @@ def complete_submission(
             submission.status = "draft"
         submission.updated_at = datetime.now()
         db.commit()
-        return {
+        out = {
             "success": True,
             "status": submission.status,
             "saved": saved,
             "submission_id": str(sub_id),
             "unanswered": comp["required_total"] - comp["answered"],
         }
+        # The partial save can still COMPLETE the form server-side (the client
+        # counts optional questions too). Trigger the health check here as
+        # well, otherwise a form finished this way never queues it.
+        if submission.status == "completed":
+            hi = _maybe_trigger_health_check(db, background_tasks, submission.user_id)
+            if hi:
+                out["health_check"] = hi
+        return out
 
     from app.services.forms import get_form_completion
     db.flush()  # make the just-saved answers visible to the completion query
@@ -597,25 +628,7 @@ def complete_submission(
     db.commit()
 
     # --- Health check trigger: queued, non-blocking ---
-    health_info = None
-    try:
-        existing = (
-            db.query(models.HealthCheck)
-            .filter(models.HealthCheck.user_id == submission.user_id)
-            .first()
-        )
-
-        if existing:
-            health_info = {
-                "check_id": str(existing.check_id),
-                "existing": True,
-            }
-        elif is_health_check_eligible(db, submission.user_id):
-            queued = queue_user_health_check(background_tasks, submission.user_id)
-            if queued:
-                health_info = {"status": "queued"}
-    except Exception as e:
-        print(f"[health trigger] failed: {e}")
+    health_info = _maybe_trigger_health_check(db, background_tasks, submission.user_id)
 
     out = {"success": True, "submission_id": str(sub_id), "saved": saved}
     if health_info:
