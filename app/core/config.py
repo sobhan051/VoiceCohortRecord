@@ -21,9 +21,9 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Default Gemini models per call type.
-AUDIO_MODEL = "gemini-3-flash-preview"
-ANOMALY_MODEL = "gemini-3-flash-preview"
-HEALTH_MODEL = os.getenv("GEMINI_HEALTH_MODEL", "gemini-3.1-flash-lite")
+AUDIO_MODEL = "gemini-3.1-flash-lite"
+ANOMALY_MODEL = "gemini-3.1-flash-lite"
+HEALTH_MODEL = os.getenv("GEMINI_HEALTH_MODEL", "gemini-3.5-flash-lite")
 
 # Brevo email
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
@@ -49,7 +49,7 @@ MAIL_ENABLED = os.getenv("MAIL_ENABLED", "true").lower() not in ("0", "false", "
 # ("high demand", 503/500). Full chain per call: [primary] + FALLBACK_MODELS.
 FALLBACK_MODELS = [
     m.strip()
-    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",")
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3-flash-preview").split(",")
     if m.strip()
 ]
 
