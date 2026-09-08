@@ -13,15 +13,80 @@ from app import models
 from app.services.visibility import is_applicable
 
 
+def get_cross_form_answers(db, user_id: int, exclude_submission_id=None):
+    """Every saved answer of this user outside one submission.
+
+    Used as read-only context for dependency evaluation when a
+    ``depends_on_vcode`` / ``visibility_rules`` parent lives in another
+    form the user filled previously. Keys use indexed form
+    (``BASE`` or ``BASE_N``); latest response wins. Never persisted.
+    """
+    q = (
+        db.query(models.Response)
+        .join(models.Submission,
+              models.Response.submission_id == models.Submission.submission_id)
+        .filter(models.Submission.user_id == user_id)
+    )
+    if exclude_submission_id is not None:
+        q = q.filter(models.Submission.submission_id != exclude_submission_id)
+    rows = q.order_by(
+        models.Response.processed_at.asc(),
+        models.Response.response_id.asc(),
+    ).all()
+    out = {}
+    for r in rows:
+        if r.extracted_value is None or r.extracted_value == "":
+            continue
+        key = f"{r.v_code}_{r.group_index}" if r.group_index is not None else r.v_code
+        out[key] = r.extracted_value
+    return out
+
+
+def _effective_section_value(v_code, answers):
+    """Answer for a section parent, collapsing grouped BASE_0/BASE_1."""
+    direct = answers.get(v_code)
+    if direct not in (None, ""):
+        return str(direct)
+    prefix = v_code + "_"
+    entries = [(int(k[len(prefix):]), str(v))
+               for k, v in answers.items()
+               if k.startswith(prefix) and k[len(prefix):].isdigit()
+               and v not in (None, "")]
+    if not entries:
+        return None
+    entries.sort(key=lambda e: e[0])
+    return ",".join(v for _, v in entries)
+
+
+def _section_value_matches(parent_value, expected):
+    """Single expected value vs a possibly multi-select parent.
+
+    Same semantics as visibility._rule_ok: an N/A / missing parent never
+    matches; a comma-joined parent matches when ANY selected code equals
+    the expected value. Keeps single-value behaviour as exact match.
+    """
+    if parent_value is None:
+        return False
+    parent_value = str(parent_value).strip()
+    if parent_value == "" or parent_value.upper() == "N/A":
+        return False
+    expected = str(expected).strip()
+    if "," in parent_value:
+        selected = [v.strip() for v in parent_value.split(",") if v.strip()]
+        return expected in selected
+    return parent_value == expected
+
+
 def _section_applicable(section, answers):
     """Section-level depends_on / skip_if rules against the answer set."""
     if section.depends_on_vcode:
-        val = str(answers.get(section.depends_on_vcode, "") or "").strip()
-        if val != str(section.depends_on_value).strip():
+        val = _effective_section_value(section.depends_on_vcode, answers)
+        if not _section_value_matches(val, section.depends_on_value):
             return False
     if section.skip_if_vcode:
-        val = str(answers.get(section.skip_if_vcode, "") or "").strip()
-        if val == str(section.skip_if_value).strip():
+        val = _effective_section_value(section.skip_if_vcode, answers)
+        # skip_if fires only on an explicit match; missing/N/A never skips.
+        if _section_value_matches(val, section.skip_if_value):
             return False
     return True
 
@@ -78,8 +143,16 @@ def get_form_completion(db, user_id: int, form_id: int):
             val = (r.extracted_value or "").strip()
             if not val:
                 continue
-            # Keep both BASE and BASE_i keys; grouping collapse happens in is_applicable.
-            answers[r.v_code] = val
+            # Keep indexed keys (BASE_N); grouping collapse happens in is_applicable.
+            key = f"{r.v_code}_{r.group_index}" if r.group_index is not None else r.v_code
+            answers[key] = val
+
+    # Visibility context: current answers win over older forms. Counting
+    # below still uses ``answers`` (current form only); applicability uses
+    # the merged set so cross-form parents resolve.
+    visible_answers = dict(get_cross_form_answers(
+        db, user_id, exclude_submission_id=submission.submission_id if submission else None))
+    visible_answers.update(answers)
 
     required = 0
     answered_required = 0
@@ -87,9 +160,9 @@ def get_form_completion(db, user_id: int, form_id: int):
     answered_applicable = 0
     for q in questions:
         section = next((s for s in sections if s.section_id == q.section_id), None)
-        if section and not _section_applicable(section, answers):
+        if section and not _section_applicable(section, visible_answers):
             continue
-        if not is_applicable(getattr(q, "visibility_rules", None), answers):
+        if not is_applicable(getattr(q, "visibility_rules", None), visible_answers):
             continue
         has = _has_answer(q.v_code, answers)
         applicable += 1

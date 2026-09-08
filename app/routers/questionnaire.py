@@ -183,6 +183,21 @@ def check_section_anomalies(
         models.Question.section_id == section.section_id
     ).all()
 
+    # Cross-form parents: evaluate against the user's other forms too.
+    # Client payload wins; this only affects applicability, not persistence.
+    try:
+        from app.services.forms import get_cross_form_answers as _xfa
+        _sub = None
+        if submission_id:
+            _sub = db.query(models.Submission).filter(
+                models.Submission.submission_id == int(submission_id)).first()
+        if _sub is not None:
+            _merged = _xfa(db, _sub.user_id, exclude_submission_id=_sub.submission_id)
+            _merged.update(answers or {})
+            answers = _merged
+    except Exception:
+        pass
+
     normalized_answers, applicable_map = normalize_answers(questions, answers)
 
 
@@ -299,9 +314,16 @@ def check_final_anomalies(
         if q.section_id in sections_by_id
     }
 
+    # Evaluate dependencies with cross-form parents included; report only
+    # on this submission's own answers.
+    from app.services.forms import get_cross_form_answers
+    _client_keys = set((answers or {}).keys())
+    _eval = dict(get_cross_form_answers(db, submission.user_id, exclude_submission_id=sub_id))
+    _eval.update(answers or {})
     normalized_answers, applicable_map = normalize_answers(
-        list(vcode_to_question.values()), answers
+        list(vcode_to_question.values()), _eval
     )
+    normalized_answers = {k: v for k, v in normalized_answers.items() if k in _client_keys}
 
     # Group the current answer set by section for the model.
     all_questions_meta = {}
@@ -472,6 +494,17 @@ def start_submission(
         if sk:
             answered_sections.add(sk)
 
+    # Cross-form context (read-only): parents living in another form the
+    # user filled previously. Current submission wins; never persisted
+    # from this payload — the client keeps it separate so submit only
+    # sends current-form answers.
+    from app.services.forms import get_cross_form_answers
+    cross_form_answers = get_cross_form_answers(
+        db, user.user_id, exclude_submission_id=submission.submission_id)
+    for k in list(cross_form_answers):
+        if k in answers:
+            del cross_form_answers[k]
+
     return {
         "submission_id": str(submission.submission_id),
         "user_id": str(user.user_id),
@@ -483,7 +516,31 @@ def start_submission(
         "answers": answers,
         "confidence": confidence,
         "answered_sections": sorted(answered_sections),
+        "cross_form_answers": cross_form_answers,
     }
+
+
+def _maybe_trigger_health_check(db, background_tasks, user_id):
+    """Queue the AI health check when every form is complete and none exists.
+
+    Idempotent: skipped when a HealthCheck row already exists, and the queue
+    dedupes per user. Returns the ``health_check`` payload fragment for the
+    API response, or None.
+    """
+    try:
+        existing = (
+            db.query(models.HealthCheck)
+            .filter(models.HealthCheck.user_id == user_id)
+            .first()
+        )
+        if existing:
+            return {"check_id": str(existing.check_id), "existing": True}
+        if is_health_check_eligible(db, user_id):
+            if queue_user_health_check(background_tasks, user_id):
+                return {"status": "queued"}
+    except Exception as e:
+        print(f"[health trigger] failed: {e}")
+    return None
 
 
 @router.post("/complete-submission")
@@ -514,7 +571,16 @@ def complete_submission(
     # Cache questions by v_code so manual-only fields still link to their question
     questions = {q.v_code: q for q in db.query(models.Question).all()}
 
-    answers, _applicable_map = normalize_answers(list(questions.values()), answers)
+    # Dependency context includes parents from other forms; only the
+    # client's own keys are persisted below so cross-form values are
+    # never duplicated into this submission.
+    from app.services.forms import get_cross_form_answers
+    _client_keys = set(answers.keys())
+    _eval_answers = dict(get_cross_form_answers(
+        db, submission.user_id, exclude_submission_id=sub_id))
+    _eval_answers.update(answers)
+    answers, _applicable_map = normalize_answers(list(questions.values()), _eval_answers)
+    answers = {k: v for k, v in answers.items() if k in _client_keys}
 
     saved = 0
     for v_code, value in answers.items():
@@ -570,13 +636,21 @@ def complete_submission(
             submission.status = "draft"
         submission.updated_at = datetime.now()
         db.commit()
-        return {
+        out = {
             "success": True,
             "status": submission.status,
             "saved": saved,
             "submission_id": str(sub_id),
             "unanswered": comp["required_total"] - comp["answered"],
         }
+        # The partial save can still COMPLETE the form server-side (the client
+        # counts optional questions too). Trigger the health check here as
+        # well, otherwise a form finished this way never queues it.
+        if submission.status == "completed":
+            hi = _maybe_trigger_health_check(db, background_tasks, submission.user_id)
+            if hi:
+                out["health_check"] = hi
+        return out
 
     from app.services.forms import get_form_completion
     db.flush()  # make the just-saved answers visible to the completion query
@@ -597,25 +671,7 @@ def complete_submission(
     db.commit()
 
     # --- Health check trigger: queued, non-blocking ---
-    health_info = None
-    try:
-        existing = (
-            db.query(models.HealthCheck)
-            .filter(models.HealthCheck.user_id == submission.user_id)
-            .first()
-        )
-
-        if existing:
-            health_info = {
-                "check_id": str(existing.check_id),
-                "existing": True,
-            }
-        elif is_health_check_eligible(db, submission.user_id):
-            queued = queue_user_health_check(background_tasks, submission.user_id)
-            if queued:
-                health_info = {"status": "queued"}
-    except Exception as e:
-        print(f"[health trigger] failed: {e}")
+    health_info = _maybe_trigger_health_check(db, background_tasks, submission.user_id)
 
     out = {"success": True, "submission_id": str(sub_id), "saved": saved}
     if health_info:
@@ -706,6 +762,14 @@ def process_voice(
         # The full answer set (old responses + new extraction) is used ONLY as
         # context for dependency resolution — never persisted as-is.
         merged.update(new_values)
+        if submission is not None:
+            try:
+                from app.services.forms import get_cross_form_answers as _xfa2
+                _x = _xfa2(db, submission.user_id, exclude_submission_id=sub_id)
+                _x.update(merged)
+                merged = _x
+            except Exception:
+                pass
         context, _applicable_map = normalize_answers(questions, merged)
 
         # Persist ONLY what the new recording actually produced. The section's
@@ -777,6 +841,13 @@ def process_voice(
 
         db.commit()
 
+        # Extraction succeeded: clean up the original + processed clips.
+        for p in {file_path}:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
         return {
             "data": extracted_data,
             "confidence": result.get("confidence", {}),
@@ -786,6 +857,3 @@ def process_voice(
     except Exception as e:
         print(f"CRITICAL ERROR: {str(e)}")
         return {"error": str(e)}
-
-    # Archive for testing: original + processed clips are kept in UPLOAD_DIR.
-    # Re-enable cleanup here once testing is complete.

@@ -103,6 +103,34 @@ function handleLogout() {
     window.location.href = '/login';
 }
 
+// Poll for a health check that is "being prepared" so the amber card flips
+// to the result automatically — no manual refresh needed. The GET endpoint
+// also queues generation server-side when eligible and none exists, so this
+// loop doubles as a retry mechanism if the original trigger was missed.
+function pollPreparingHealthCard(userId) {
+    if (window.__hcPreparingPoll) return; // one poller per page load
+    window.__hcPreparingPoll = true;
+
+    let tries = 0;
+    const maxTries = 60;      // 60 × 10 s = 10 minutes, then give up quietly
+    const timer = setInterval(async () => {
+        tries++;
+        const card = document.getElementById('health-preparing-card');
+        if (!card) { clearInterval(timer); window.__hcPreparingPoll = false; return; }
+        if (tries > maxTries) { clearInterval(timer); window.__hcPreparingPoll = false; return; }
+        try {
+            const res = await fetch(`/api/health-check/by-user/${userId}`);
+            const data = await res.json();
+            if (data && data.exists) {
+                clearInterval(timer);
+                window.__hcPreparingPoll = false;
+                // Reload so the whole dashboard reflects the ready checkup.
+                window.location.reload();
+            }
+        } catch (e) { /* transient network/server error — keep polling */ }
+    }, 10000);
+}
+
 // ---------- User Dashboard ----------
 async function loadUserDashboard() {
     const container = document.getElementById('user-content');
@@ -183,7 +211,8 @@ async function loadUserDashboard() {
                     <a href="/health-check/${hc.check_id}" class="inline-block mt-4 bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2.5 rounded-xl text-sm font-bold transition">مشاهده چکاپ کامل</a>
                 </div>`;
             } else if (done >= totalFormsNeeded && totalFormsNeeded>0) {
-                healthHtml = `<div class="mb-8 bg-amber-50 border border-amber-200 rounded-3xl p-6 text-center"><p class="text-amber-800 font-bold">همه فرم‌ها تکمیل شد — چکاپ در حال آماده‌سازی...</p><p class="text-sm text-amber-600 mt-1">صفحه را بعد از چند لحظه تازه کنید</p></div>`;
+                healthHtml = `<div id="health-preparing-card" class="mb-8 bg-amber-50 border border-amber-200 rounded-3xl p-6 text-center"><p class="text-amber-800 font-bold">همه فرم‌ها تکمیل شد — چکاپ در حال آماده‌سازی...</p><p class="text-sm text-amber-600 mt-1">این کارت به‌صورت خودکار به‌روزرسانی می‌شود</p></div>`;
+                pollPreparingHealthCard(currentUser.user_id);
             } else if (totalFormsNeeded>0) {
                 healthHtml = `<div class="mb-8 bg-white border border-gray-100 rounded-3xl p-6"><div class="flex items-center justify-between"><div><h3 class="font-bold text-gray-800">چکاپ سلامت</h3><p class="text-sm text-gray-500 mt-1">${done} از ${totalFormsNeeded} فرم کامل شده — پس از تکمیل کامل همه فرم‌ها، چکاپ هوشمند ایجاد می‌شود</p></div><div class="flex gap-1">${Array.from({length: totalFormsNeeded},(_,i)=>`<span class="w-3 h-3 rounded-full ${i<done?'bg-emerald-500':'bg-gray-200'}"></span>`).join('')}</div></div></div>`;
             }

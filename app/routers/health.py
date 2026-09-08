@@ -38,14 +38,35 @@ def _user_sex_age(db, user):
 
 
 @router.get("/health-check/by-user/{user_id}")
-async def health_by_user(user_id: str, db: Session = Depends(get_db)):
+async def health_by_user(
+    user_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
     try:
         uid = int(user_id)
     except (ValueError, TypeError):
         return {"error": "شناسه نامعتبر"}
     hc = db.query(models.HealthCheck).filter(models.HealthCheck.user_id == uid).first()
     if not hc:
-        return {"exists": False}
+        # Safety net: the user may have completed all forms while the trigger
+        # was missed (older version, partial-save path, process restart…).
+        # The dashboard polls this endpoint on every load, so queue the
+        # generation here when the user is eligible and none exists. The
+        # queue dedupes per user, and the background worker re-verifies
+        # eligibility + existing rows before spending an AI call.
+        out = {"exists": False}
+        try:
+            from app.services.health_check import (
+                get_health_eligibility,
+                queue_user_health_check,
+            )
+
+            if get_health_eligibility(db, uid)["eligible"]:
+                out["queued"] = queue_user_health_check(background_tasks, uid)
+        except Exception as e:
+            print(f"[health-check] auto-queue on poll failed for user {uid}: {e}")
+        return out
     user = db.query(models.User).filter(models.User.user_id == uid).first()
     sex, age = _user_sex_age(db, user)
     return {

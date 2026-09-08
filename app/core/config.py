@@ -21,22 +21,35 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Default Gemini models per call type.
-AUDIO_MODEL = "gemini-3-flash-preview"
-ANOMALY_MODEL = "gemini-3-flash-preview"
-HEALTH_MODEL = os.getenv("GEMINI_HEALTH_MODEL", "gemini-3.1-flash-lite")
+AUDIO_MODEL = "gemini-3.5-flash-lite"
+ANOMALY_MODEL = "gemini-3.5-flash-lite"
+HEALTH_MODEL = os.getenv("GEMINI_HEALTH_MODEL", "gemini-3.5-flash-lite")
 
 # Brevo email
 BREVO_API_KEY = os.getenv("BREVO_API_KEY", "")
 BREVO_SENDER_EMAIL = os.getenv("BREVO_SENDER_EMAIL")
 BREVO_SENDER_NAME = os.getenv("BREVO_SENDER_NAME", "VCR")
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://127.0.0.1:8000")
+def _clean_env_url(value):
+    """Normalize a URL from the environment.
+
+    Values pasted into deployment dashboards often arrive wrapped in quotes
+    (\"https://...\") or padded with whitespace — both silently corrupt the
+    email links built from APP_BASE_URL. Strip them once, here.
+    """
+    return (value or "").strip().strip('"').strip("'").strip()
+
+
+# Public base URL used in email links. If this is missing/wrong when a health
+# check is generated, the emailed link points at the wrong host forever (the
+# target is stored inside the Brevo tracking URL at send time).
+APP_BASE_URL = _clean_env_url(os.getenv("APP_BASE_URL")) or "http://127.0.0.1:8000"
 MAIL_ENABLED = os.getenv("MAIL_ENABLED", "true").lower() not in ("0", "false", "no", "off")
 
 # Models tried (in order) when the primary model returns transient overload
 # ("high demand", 503/500). Full chain per call: [primary] + FALLBACK_MODELS.
 FALLBACK_MODELS = [
     m.strip()
-    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",")
+    for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.1-flash-lite,gemini-3-flash-preview").split(",")
     if m.strip()
 ]
 
