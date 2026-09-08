@@ -13,7 +13,8 @@ let activeRecordingSection = null;
 let recordingStartTime = null;
 const MIN_RECORDING_MS = 3000;
 
-let sessionContext = {};           // { v_code: value }
+let sessionContext = {};           // { v_code: value } – current submission only (this is what gets submitted)
+let crossFormContext = {};         // { v_code: value } – read-only parents from other forms (never submitted)
 let sessionConfidence = {};        // { v_code: 0..1 } – AI confidence per field
 let sessionConfidenceReasons = {}; // { v_code: reason } – why confidence is below 1
 let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value } }
@@ -374,8 +375,17 @@ function loadExistingProgress(data) {
         if (conf !== null && conf !== undefined) sessionConfidence[vcode] = conf;
     });
 
+    // Cross-form parents (read-only): a depends_on_vcode / visibility_rule
+    // parent may live in another form the user filled previously. Kept
+    // separate so the final submit still sends current-form answers only.
+    crossFormContext = {};
+    Object.entries(data.cross_form_answers || {}).forEach(([vcode, val]) => {
+        if (val === null || val === undefined || val === '') return;
+        if (sessionContext[vcode] === undefined) crossFormContext[vcode] = String(val);
+    });
+
     // Reuse the AI-fill routine to populate the inputs from saved answers.
-    if (Object.keys(answers).length > 0) {
+    if (Object.keys(answers).length > 0 || Object.keys(crossFormContext).length > 0) {
         applyAiResults(answers);
         updateQuestionVisibility();
     }
@@ -441,6 +451,17 @@ function stopRecordingViaFab() {
 }
 
 // ---------- Section‑Level Visibility (DB rules) ----------
+function sectionDependsMet(parentValue, expected) {
+    if (parentValue === null || parentValue === undefined) return false;
+    parentValue = String(parentValue).trim();
+    if (parentValue === '' || parentValue.toUpperCase() === 'N/A') return false;
+    expected = String(expected).trim();
+    if (parentValue.includes(',')) {
+        return parentValue.split(',').map(v => v.trim()).filter(Boolean).includes(expected);
+    }
+    return parentValue === expected;
+}
+
 function updateQuestionVisibility() {
     document.querySelectorAll('section[id^="sect-"]').forEach(sectionEl => {
         const sectionKey = sectionEl.id.replace('sect-', '');
@@ -448,12 +469,10 @@ function updateQuestionVisibility() {
         let sectionShouldShow = true;
 
         if (meta && meta.depends_on_vcode) {
-            const parentValue = sessionContext[meta.depends_on_vcode];
-            if (parentValue === undefined || parentValue === null || parentValue === '') {
-                sectionShouldShow = false;
-            } else if (parentValue != meta.depends_on_value) {
-                sectionShouldShow = false;
-            }
+            // getEffectiveAnswer covers current + cross-form parents and
+            // grouped BASE_0/BASE_1 entries.
+            sectionShouldShow = sectionDependsMet(
+                getEffectiveAnswer(meta.depends_on_vcode), meta.depends_on_value);
         }
 
         sectionEl.style.display = sectionShouldShow ? '' : 'none';
@@ -489,16 +508,24 @@ function normalizeRules(raw) {
 
 // Effective answer for a parent v_code — collapses grouped BASE_0/BASE_1
 // entries into one comma-joined value (multi-select semantics).
+// Current-form answers win; cross-form parents (other forms the user
+// filled previously) are the fallback and are never submitted.
 function getEffectiveAnswer(vcode) {
     const direct = sessionContext[vcode];
     if (direct !== undefined && direct !== null && direct !== '') return String(direct);
+    const cross = (typeof crossFormContext !== 'undefined') ? crossFormContext[vcode] : undefined;
+    if (cross !== undefined && cross !== null && cross !== '') return String(cross);
     const entries = [];
-    Object.entries(sessionContext).forEach(([key, val]) => {
-        const m = key.match(/^(.+?)_(\d+)$/);
-        if (m && m[1] === vcode && val !== undefined && val !== null && val !== '') {
-            entries.push([parseInt(m[2]), String(val)]);
-        }
-    });
+    const collect = (store) => {
+        Object.entries(store || {}).forEach(([key, val]) => {
+            const m = key.match(/^(.+?)_(\d+)$/);
+            if (m && m[1] === vcode && val !== undefined && val !== null && val !== '') {
+                entries.push([parseInt(m[2]), String(val)]);
+            }
+        });
+    };
+    collect(sessionContext);
+    collect(typeof crossFormContext !== 'undefined' ? crossFormContext : {});
     if (entries.length === 0) return null;
     entries.sort((a, b) => a[0] - b[0]);
     return entries.map(e => e[1]).join(',');
@@ -1663,7 +1690,7 @@ async function runSectionSanityCheck(sectionKey, confidenceReasons) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 section_key: sectionKey,
-                answers: sessionContext,
+                answers: Object.assign({}, crossFormContext, sessionContext),
                 confidence_reasons: confidenceReasons || {},
                 submission_id: currentSubmissionId
             })
@@ -1977,7 +2004,7 @@ async function submitFinalForm() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     submission_id: currentSubmissionId,
-                    answers: sessionContext,
+                    answers: Object.assign({}, crossFormContext, sessionContext),
                     confidence_reasons: sessionConfidenceReasons,
                 })
             });
