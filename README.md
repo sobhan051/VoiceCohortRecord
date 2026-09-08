@@ -98,9 +98,11 @@ request logs, with full management APIs for forms, sections, and questions.
   floating collapsible summary panel across the whole form.
 
 ### Conditional form logic
-- Sections declare dependencies (`depends_on_vcode` / `depends_on_value`) and
-  skip rules (`skip_if_vcode` / `skip_if_value`); visibility is re-evaluated
-  live as fields are filled or edited.
+- Sections declare dependencies (`depends_on_vcode` / `depends_on_value`); the
+  parent question may live in ANOTHER form — cross-form answers are included
+  when evaluating visibility. Visibility is re-evaluated live as fields are
+  filled or edited. (The old `skip_if_vcode` / `skip_if_value` rules were
+  removed — depends_on is the only section-gating mechanism.)
 
 ### Infrastructure
 - **CDN proxy** — Tailwind CSS and the Vazirmatn font are proxied through the

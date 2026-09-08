@@ -36,8 +36,6 @@ class Section(Base):
     sort_order = Column(Integer, default=0)
     depends_on_vcode = Column(String(20), nullable=True)
     depends_on_value = Column(String, nullable=True)
-    skip_if_vcode = Column(String(20), nullable=True)
-    skip_if_value = Column(String, nullable=True)
 
 
 class Question(Base):

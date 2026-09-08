@@ -368,8 +368,6 @@ async def admin_form_sections(form_id: str, db: Session = Depends(get_db)):
             "sort_order": s.sort_order,
             "depends_on_vcode": s.depends_on_vcode,
             "depends_on_value": s.depends_on_value,
-            "skip_if_vcode": s.skip_if_vcode,
-            "skip_if_value": s.skip_if_value,
         }
         for s in sections
     ]
@@ -386,8 +384,6 @@ async def admin_create_section(payload: dict, db: Session = Depends(get_db)):
             sort_order=payload.get("sort_order", 0),
             depends_on_vcode=payload.get("depends_on_vcode"),
             depends_on_value=payload.get("depends_on_value"),
-            skip_if_vcode=payload.get("skip_if_vcode"),
-            skip_if_value=payload.get("skip_if_value"),
         )
         db.add(s)
         db.commit()
@@ -407,8 +403,7 @@ async def admin_update_section(section_id: str, payload: dict, db: Session = Dep
     if not s:
         return {"error": "Section not found"}
     for field in ("section_key", "name_fa", "sort_order",
-                  "depends_on_vcode", "depends_on_value",
-                  "skip_if_vcode", "skip_if_value"):
+                  "depends_on_vcode", "depends_on_value"):
         if field in payload:
             setattr(s, field, payload[field])
     if "form_id" in payload:

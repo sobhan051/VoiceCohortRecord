@@ -472,6 +472,27 @@ def start_submission(
         if sk:
             answered_sections.add(sk)
 
+    # Cross-form answers: the user's saved responses in ALL other forms, so a
+    # section whose depends_on_vcode (and question visibility_rules) points to
+    # a parent question living in a DIFFERENT form still shows/hides correctly
+    # in the questionnaire UI. Mirrors the admin submission endpoint.
+    cross_form_answers = {}
+    other_rows = (
+        db.query(models.Response)
+        .join(models.Submission, models.Response.submission_id == models.Submission.submission_id)
+        .filter(
+            models.Submission.user_id == user.user_id,
+            models.Submission.form_id != form.form_id,
+        )
+        .order_by(models.Response.processed_at.asc(), models.Response.response_id.asc())
+        .all()
+    )
+    for r in other_rows:
+        if r.extracted_value is None or r.extracted_value == "":
+            continue
+        key = f"{r.v_code}_{r.group_index}" if r.group_index is not None else r.v_code
+        cross_form_answers[key] = r.extracted_value
+
     return {
         "submission_id": str(submission.submission_id),
         "user_id": str(user.user_id),
@@ -483,6 +504,7 @@ def start_submission(
         "answers": answers,
         "confidence": confidence,
         "answered_sections": sorted(answered_sections),
+        "cross_form_answers": cross_form_answers,
     }
 
 

@@ -366,6 +366,19 @@ function loadExistingProgress(data) {
     const confidence = data.confidence || {};
     const answeredSections = data.answered_sections || [];
 
+    // Cross-form answers first (parents living in another form the user
+    // already submitted) so section depends_on / question visibility_rules
+    // referencing them evaluate — current-form answers are seeded after and
+    // take precedence.
+    if (data.cross_form_answers) {
+        Object.entries(data.cross_form_answers).forEach(([vcode, val]) => {
+            if (val === null || val === undefined || val === '') return;
+            if (sessionContext[vcode] === undefined) {
+                sessionContext[vcode] = String(val);
+            }
+        });
+    }
+
     // Seed client state so the final submit includes prior answers untouched.
     Object.entries(answers).forEach(([vcode, val]) => {
         if (val !== null && val !== undefined) sessionContext[vcode] = String(val);
@@ -448,11 +461,23 @@ function updateQuestionVisibility() {
         let sectionShouldShow = true;
 
         if (meta && meta.depends_on_vcode) {
-            const parentValue = sessionContext[meta.depends_on_vcode];
-            if (parentValue === undefined || parentValue === null || parentValue === '') {
+            // getEffectiveAnswer resolves cross-form parents, grouped BASE_0/BASE_1
+            // entries, and multi-select "1,3" values — a section depending on a
+            // question recorded in ANOTHER form still evaluates correctly.
+            const parentValue = getEffectiveAnswer(meta.depends_on_vcode);
+            if (parentValue === null || parentValue === undefined || parentValue === '') {
                 sectionShouldShow = false;
-            } else if (parentValue != meta.depends_on_value) {
-                sectionShouldShow = false;
+            } else {
+                const actual = String(parentValue).trim();
+                const expected = String(meta.depends_on_value ?? '').trim();
+                if (actual.toUpperCase() === 'N/A') {
+                    sectionShouldShow = false;
+                } else if (actual.includes(',')) {
+                    const selected = actual.split(',').map(v => v.trim()).filter(Boolean);
+                    sectionShouldShow = selected.includes(expected);
+                } else {
+                    sectionShouldShow = actual === expected;
+                }
             }
         }
 

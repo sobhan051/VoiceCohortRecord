@@ -3,25 +3,37 @@ question has an answer in the user's latest submission for that form.
 
 - Optional questions (is_required=false) never block completion.
 - "N/A" counts as answered (it is a stored logical answer).
-- Sections whose depends_on/skip_if rule is unmet are excluded, and question
+- Sections whose depends_on rule is unmet are excluded (depends_on_vcode may
+  point to a parent question in ANOTHER form — cross-form answers are merged
+  into the evaluation set), and question
   visibility_rules are evaluated with the shared visibility evaluator.
 - Half-way submissions count: status is irrelevant, the answers are.
 """
 from sqlalchemy import and_, desc
 
 from app import models
-from app.services.visibility import is_applicable
+from app.services.visibility import _effective_answer, is_applicable
 
 
 def _section_applicable(section, answers):
-    """Section-level depends_on / skip_if rules against the answer set."""
+    """Section-level depends_on rule against the answer set.
+
+    ``answers`` includes cross-form answers (parent questions recorded in
+    another form of the same user), so a section whose depends_on_vcode lives
+    in a different form still evaluates correctly.
+    """
     if section.depends_on_vcode:
-        val = str(answers.get(section.depends_on_vcode, "") or "").strip()
-        if val != str(section.depends_on_value).strip():
+        val = _effective_answer(section.depends_on_vcode, answers)
+        expected = str(section.depends_on_value or "").strip()
+        actual = str(val or "").strip()
+        if actual == "":
             return False
-    if section.skip_if_vcode:
-        val = str(answers.get(section.skip_if_vcode, "") or "").strip()
-        if val == str(section.skip_if_value).strip():
+        # Multi-select parents store "1,3" — pass if ANY selected code matches.
+        if "," in actual:
+            selected = [v.strip() for v in actual.split(",") if v.strip()]
+            if expected not in selected:
+                return False
+        elif actual != expected:
             return False
     return True
 
@@ -69,7 +81,28 @@ def get_form_completion(db, user_id: int, form_id: int):
             "fully_completed": True, "has_submission": submission is not None,
         }
 
+    # Seed the answer set with CROSS-FORM answers (the user's responses in
+    # other forms) so section depends_on rules and question visibility_rules
+    # referencing a parent question in another form evaluate correctly. The
+    # current form's own answers are overlaid afterwards and take precedence.
+    other_rows = (
+        db.query(models.Response)
+        .join(models.Submission, models.Response.submission_id == models.Submission.submission_id)
+        .filter(
+            models.Submission.user_id == user_id,
+            models.Submission.form_id != form_id,
+        )
+        .order_by(models.Response.processed_at.asc(), models.Response.response_id.asc())
+        .all()
+    )
     answers = {}
+    for r in other_rows:
+        val = (r.extracted_value or "").strip()
+        if not val:
+            continue
+        key = f"{r.v_code}_{r.group_index}" if r.group_index is not None else r.v_code
+        answers[key] = val
+
     if submission:
         rows = db.query(models.Response).filter(
             models.Response.submission_id == submission.submission_id
@@ -78,8 +111,10 @@ def get_form_completion(db, user_id: int, form_id: int):
             val = (r.extracted_value or "").strip()
             if not val:
                 continue
-            # Keep both BASE and BASE_i keys; grouping collapse happens in is_applicable.
-            answers[r.v_code] = val
+            # Keep both BASE and BASE_i keys; grouping collapse happens in
+            # _effective_answer / is_applicable.
+            key = f"{r.v_code}_{r.group_index}" if r.group_index is not None else r.v_code
+            answers[key] = val
 
     required = 0
     answered_required = 0
