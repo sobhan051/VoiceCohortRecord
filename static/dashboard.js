@@ -1130,17 +1130,6 @@ function renderExportView(container, tables) {
                 <div id="exp-columns-list" class="space-y-2"></div>
             </div>
 
-            <div id="exp-join-area" class="mb-4 hidden">
-                <label class="block text-sm font-bold mb-2">ادغام جدول‌ها (Join) — اختیاری</label>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
-                    <div>
-                        <label class="block text-xs text-gray-500 mb-1">کلید مشترک (اختیاری)</label>
-                        <input id="exp-join-key" type="text" class="w-full border rounded-xl p-2" placeholder="مثلاً: user_id">
-                    </div>
-                </div>
-                <p class="text-xs text-gray-500 mt-1">اگر بیش از یک جدول انتخاب شده و کلید مشترک خالی باشد، ضرب دکارتی استفاده می‌شود.</p>
-            </div>
-
             <div class="flex flex-wrap items-center gap-3">
                 <button onclick="runExport()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-xl text-sm font-bold inline-flex items-center gap-2">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
@@ -1165,15 +1154,12 @@ function expRebuildColumns() {
     const checked = Array.from(document.querySelectorAll('.exp-table-cb:checked')).map(cb => cb.value);
     const colsArea = document.getElementById('exp-columns-area');
     const colsList = document.getElementById('exp-columns-list');
-    const joinArea = document.getElementById('exp-join-area');
 
     if (checked.length === 0) {
         colsArea.classList.add('hidden');
-        joinArea.classList.add('hidden');
         return;
     }
     colsArea.classList.remove('hidden');
-    joinArea.classList.toggle('hidden', checked.length < 2);
 
     colsList.innerHTML = checked.map(name => {
         const t = exportTablesCache.find(x => x.name === name);
@@ -1216,9 +1202,8 @@ function expGatherPayload() {
             .map(cb => cb.value);
         if (cols.length > 0) columns[name] = cols;
     });
-    const join_key = document.getElementById('exp-join-key')?.value?.trim() || null;
 
-    return { format, filename, payload: { tables, columns, join_key } };
+    return { format, filename, payload: { tables, columns } };
 }
 
 async function runExport() {
