@@ -3,21 +3,20 @@
 Lets an admin pull data out of the PostgreSQL database in three formats:
 
 - ``sql``   : a plain-SQL dump (whole database OR selected tables).
-- ``csv``   : comma-separated values (one or more joined tables, with
-              column selection per table and an optional ``ON`` clause
-              to control how the tables are joined).
-- ``xlsx``  : Excel workbook (one sheet per table, or a single sheet
-              for a join).
+- ``csv``   : comma-separated values.  One CSV file per selected table;
+              multiple tables are bundled into a single **ZIP archive**.
+- ``xlsx``  : Excel workbook with one worksheet per selected table.
 
 Tables are restricted to the application's own schema (the
 ``Base.metadata.tables`` registry) so the admin cannot pull arbitrary
-arbitrary tables living in the database.
+tables living in the database.
 """
 import csv
 import io
 import json
 import re
 import subprocess
+import zipfile
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -40,7 +39,7 @@ router = APIRouter(prefix="/api/admin/export")
 # ---------------------------------------------------------------------------
 
 def _app_metadata() -> MetaData:
-    """Return a MetaData object containing only the application tables.
+    """Return the SQLAlchemy MetaData containing only the application tables.
 
     ``Base.metadata`` includes every model that has been imported in this
     process — the same set ``create_all`` writes. That's the safe surface
@@ -59,7 +58,6 @@ async def list_tables(db: Session = Depends(get_db)):
     for table in md.sorted_tables:
         name = table.name
         if name not in db_tables:
-            # Table declared in models but not yet created in the DB.
             continue
         cols = []
         for col in table.columns:
@@ -108,18 +106,53 @@ def _validate_columns(table: Table, cols: Iterable[str]) -> List[str]:
     return out
 
 
+def _fetch_single_table(
+    db: Session, t: Table, cols: List[str], where: Optional[str]
+) -> Tuple[List[str], List[Dict]]:
+    """Fetch all rows from one table and return (fieldnames, data_rows)."""
+    sel_cols = [t.c[c] for c in cols]
+    stmt = select(*sel_cols)
+    if where:
+        stmt = stmt.where(text(where))
+    rows = db.execute(stmt).fetchall()
+    fieldnames = cols
+    data_rows = [dict(zip(fieldnames, r)) for r in rows]
+    return fieldnames, data_rows
+
+
+def _strip_ext(name: str) -> str:
+    """Strip a trailing .csv or .xlsx extension (case-insensitive)."""
+    for ext in (".csv", ".xlsx"):
+        if name.lower().endswith(ext):
+            return name[:-len(ext)]
+    return name
+
+
+def _write_csv(buf: io.StringIO, fieldnames: List[str], data_rows: List[Dict]) -> None:
+    """Write rows to a CSV file object, casting datetimes to strings."""
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for row in data_rows:
+        safe = {}
+        for k in fieldnames:
+            v = row.get(k)
+            if isinstance(v, datetime):
+                safe[k] = v.isoformat()
+            elif v is None:
+                safe[k] = ""
+            else:
+                safe[k] = v
+        writer.writerow(safe)
+
+
 # ---------------------------------------------------------------------------
 # CSV / XLSX export request body
 # ---------------------------------------------------------------------------
 
 class ExportPayload(BaseModel):
     tables: List[str] = Field(..., description="List of table names to export")
-    # columns[table_name] = list of column names; null/missing = all columns
-    columns: Dict[str, List[str]] = Field(default_factory=dict)
-    # join_key is the column shared between the tables. Optional; when
-    # omitted we fall back to a Cartesian product for CSV/XLSX.
+    columns: Dict[str, List[str]] = Field(default_factory=dict, description="columns[table_name] = list of column names; null/missing = all columns")
     join_key: Optional[str] = None
-    # joins is an explicit list of (left, right, on) for joining >2 tables.
     joins: Optional[List[Dict[str, str]]] = None
     where: Optional[str] = Field(default=None, description="Optional raw WHERE clause; identifiers must be quoted already")
     filename: Optional[str] = None
@@ -139,7 +172,7 @@ async def export_csv(payload: ExportPayload, db: Session = Depends(get_db)):
     if not tables:
         return Response(content=json.dumps({"error": "No tables provided"}), status_code=400, media_type="application/json")
 
-    # Resolve columns per table
+    # Resolve columns per table (validate against model metadata)
     table_cols: Dict[str, List[str]] = {}
     for t in tables:
         if payload.columns.get(t.name):
@@ -150,83 +183,37 @@ async def export_csv(payload: ExportPayload, db: Session = Depends(get_db)):
         else:
             table_cols[t.name] = [c.name for c in t.columns]
 
-    # Build a single SELECT (joined if possible) so we can stream one CSV.
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # Single table -> one CSV response.
     if len(tables) == 1:
         t = tables[0]
-        sel_cols = [t.c[c] for c in table_cols[t.name]]
-        stmt = select(*sel_cols)
-        if payload.where:
-            stmt = stmt.where(text(payload.where))
-        rows = db.execute(stmt).fetchall()
-        fieldnames = table_cols[t.name]
-        data_rows = [dict(zip(fieldnames, r)) for r in rows]
-        join_label = t.name
-    else:
-        # Multi-table. If we have a join key or explicit joins, use them;
-        # otherwise fall back to a cross join (the user explicitly asked
-        # for that level of control).
-        try:
-            joined = tables[0]
-            join_clauses = []
-            join_rels: List[Tuple[Table, Table, object]] = []
-            if payload.joins:
-                for j in payload.joins:
-                    left = j.get("left")
-                    right = j.get("right")
-                    on_left = j.get("on_left") or j.get("on")
-                    on_right = j.get("on_right") or j.get("on")
-                    if not (left and right and on_left and on_right):
-                        return Response(content=json.dumps({"error": "each join needs left/right/on_left/on_right"}), status_code=400, media_type="application/json")
-                    l_tbl = _resolve_tables([left])[0]
-                    r_tbl = _resolve_tables([right])[0]
-                    if on_left not in l_tbl.c or on_right not in r_tbl.c:
-                        return Response(content=json.dumps({"error": f"join column {on_left}/{on_right} not found"}), status_code=400, media_type="application/json")
-                    join_rels.append((l_tbl, r_tbl, l_tbl.c[on_left] == r_tbl.c[on_right]))
-            elif payload.join_key:
-                if payload.join_key not in tables[0].c:
-                    return Response(content=json.dumps({"error": f"join_key {payload.join_key!r} not on first table"}), status_code=400, media_type="application/json")
-                first = tables[0].c[payload.join_key]
-                for t in tables[1:]:
-                    if payload.join_key not in t.c:
-                        return Response(content=json.dumps({"error": f"join_key {payload.join_key!r} not on {t.name}"}), status_code=400, media_type="application/json")
-                    join_rels.append((tables[0], t, first == t.c[payload.join_key]))
-            # Build one big SELECT
-            sel_cols = []
-            for t in tables:
-                for c in table_cols[t.name]:
-                    alias = f"{t.name}__{c}"
-                    sel_cols.append(t.c[c].label(alias))
-            stmt = select(*sel_cols)
-            for l, r, on in join_rels:
-                stmt = stmt.join(r, on)
-            if payload.where:
-                stmt = stmt.where(text(payload.where))
-            rows = db.execute(stmt).fetchall()
-            fieldnames = [col.key for col in sel_cols]
-            data_rows = [dict(zip(fieldnames, r)) for r in rows]
-            join_label = "joined"
-        except ValueError as exc:
-            return Response(content=json.dumps({"error": str(exc)}), status_code=400, media_type="application/json")
+        fieldnames, data_rows = _fetch_single_table(db, t, table_cols[t.name], payload.where)
+        buf = io.StringIO()
+        _write_csv(buf, fieldnames, data_rows)
+        filename = payload.filename or f"vcr_export_{t.name}_{ts}.csv"
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
-    # Stream the CSV
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=fieldnames)
-    writer.writeheader()
-    for row in data_rows:
-        # Cast datetimes / JSON to strings
-        safe = {}
-        for k, v in row.items():
-            if isinstance(v, datetime):
-                safe[k] = v.isoformat()
-            else:
-                safe[k] = v
-        writer.writerow(safe)
+    # Multiple tables -> ZIP archive, one CSV file per selected table.
+    raw_name = _strip_ext(payload.filename or "")
+    zip_buf = io.BytesIO()
+    with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for t in tables:
+            fieldnames, data_rows = _fetch_single_table(db, t, table_cols[t.name], payload.where)
+            csv_buf = io.StringIO()
+            _write_csv(csv_buf, fieldnames, data_rows)
+            fname = (f"{raw_name}_{t.name}" if raw_name else f"vcr_export_{t.name}_{ts}") + ".csv"
+            zf.writestr(fname, csv_buf.getvalue())
 
-    filename = payload.filename or f"vcr_export_{join_label}_{datetime.now():%Y%m%d_%H%M%S}.csv"
+    zip_filename = f"{raw_name}.zip" if raw_name else f"vcr_export_{ts}.zip"
     return Response(
-        content=buf.getvalue(),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        content=zip_buf.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
     )
 
 
@@ -244,6 +231,7 @@ async def export_xlsx(payload: ExportPayload, db: Session = Depends(get_db)):
     if not tables:
         return Response(content=json.dumps({"error": "No tables provided"}), status_code=400, media_type="application/json")
 
+    # Resolve columns per table
     table_cols: Dict[str, List[str]] = {}
     for t in tables:
         if payload.columns.get(t.name):
@@ -254,31 +242,40 @@ async def export_xlsx(payload: ExportPayload, db: Session = Depends(get_db)):
         else:
             table_cols[t.name] = [c.name for c in t.columns]
 
-    # When multiple tables, write one sheet per table.
+    # Pre-compute all data outside the ExcelWriter context so that
+    # database errors surface cleanly instead of producing an empty
+    # workbook that openpyxl rejects.
+    raw_name = _strip_ext(payload.filename or "")
+    sheets_data: List[Tuple[str, List[str], List[Dict]]] = []
+    used_sheets: Set[str] = set()
+    for t in tables:
+        fieldnames, data_rows = _fetch_single_table(db, t, table_cols[t.name], payload.where)
+        # Build a unique sheet name (Excel: max 31 chars, no duplicates).
+        if raw_name:
+            base = raw_name[:28]
+        else:
+            base = t.name[:31]
+        sheet = base
+        suffix = 1
+        while sheet in used_sheets:
+            suffix += 1
+            sheet = f"{base[:28]}_{suffix}"
+        used_sheets.add(sheet)
+        sheets_data.append((sheet, fieldnames, data_rows))
+
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        if len(tables) == 1:
-            t = tables[0]
-            sel_cols = [t.c[c] for c in table_cols[t.name]]
-            stmt = select(*sel_cols)
-            if payload.where:
-                stmt = stmt.where(text(payload.where))
-            rows = db.execute(stmt).fetchall()
-            df = pd.DataFrame([dict(zip(table_cols[t.name], r)) for r in rows])
-            sheet = (payload.filename or t.name)[:31]
+        for sheet, fieldnames, data_rows in sheets_data:
+            df = pd.DataFrame(data_rows, columns=fieldnames)
+            if not df.empty:
+                for col in df.columns:
+                    df[col] = df[col].apply(
+                        lambda v: v.isoformat() if isinstance(v, datetime) else v
+                    )
             df.to_excel(writer, sheet_name=sheet, index=False)
-        else:
-            for t in tables:
-                sel_cols = [t.c[c] for c in table_cols[t.name]]
-                stmt = select(*sel_cols)
-                if payload.where:
-                    stmt = stmt.where(text(payload.where))
-                rows = db.execute(stmt).fetchall()
-                df = pd.DataFrame([dict(zip(table_cols[t.name], r)) for r in rows])
-                sheet = t.name[:31]
-                df.to_excel(writer, sheet_name=sheet, index=False)
+
     buf.seek(0)
-    filename = payload.filename or f"vcr_export_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    filename = f"{raw_name}.xlsx" if raw_name else f"vcr_export_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
     return Response(
         content=buf.getvalue(),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -287,15 +284,15 @@ async def export_xlsx(payload: ExportPayload, db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# SQL export (raw INSERTs from pandas.to_sql + CREATE TABLE)
+# SQL export (raw INSERTs from SQLAlchemy Core)
 # ---------------------------------------------------------------------------
 
 @router.post("/sql")
 async def export_sql(payload: ExportPayload, db: Session = Depends(get_db)):
     """Dump the selected tables as plain SQL (DDL + INSERTs).
 
-    Uses ``pandas.DataFrame.to_sql``-style INSERT generation via SQLAlchemy
-    Core so JSONB and other PG types are quoted safely. No pg_dump needed.
+    When ``tables`` is empty, every app table is dumped. Inserts are
+    batched 500 rows at a time. No pg_dump needed.
     """
     try:
         tables = _resolve_tables(payload.tables) if payload.tables else _resolve_tables([t.name for t in _app_metadata().sorted_tables])
@@ -321,7 +318,6 @@ async def export_sql(payload: ExportPayload, db: Session = Depends(get_db)):
         if not rows:
             parts.append(f"\n-- table {t.name} is empty; skipping\n")
             continue
-        # Build INSERT statements in batches
         col_list = ", ".join(_quote_ident(c) for c in cols)
         parts.append(f"\n-- {t.name} ({len(rows)} rows)\n")
         batch: List[str] = []
@@ -370,16 +366,12 @@ async def export_pgdump():
     """Run ``pg_dump`` against the configured DATABASE_URL and stream it back.
 
     Falls back to a plain-SQL reconstruction if ``pg_dump`` isn't available
-    on PATH or if the URL is a libpq URI that pg_dump can't parse directly
-    (e.g. the Neon pooler URL with query params).
+    on PATH or if pg_dump fails for any other reason.
     """
     from app.core.config import DATABASE_URL
     if not DATABASE_URL:
         return Response(content=json.dumps({"error": "DATABASE_URL not configured"}), status_code=500, media_type="application/json")
 
-    # Normalize the URL: pg_dump accepts a libpq URI but doesn't like
-    # certain query params (channel_binding, sslmode=require work fine,
-    # but the test of having ``pg_dump`` present comes first).
     try:
         proc = subprocess.run(
             ["pg_dump", DATABASE_URL, "--no-owner", "--no-privileges"],
@@ -398,7 +390,7 @@ async def export_pgdump():
         err = proc.stderr.decode("utf-8", errors="replace")[:500]
     except FileNotFoundError:
         err = "pg_dump binary not found on PATH"
-    except Exception as exc:  # pragma: no cover
+    except Exception as exc:
         err = f"pg_dump failed: {exc}"
 
     # Fallback: in-process SQL dump of every app table
