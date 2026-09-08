@@ -79,10 +79,10 @@ _SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _quote_ident(name: str) -> str:
-    """Validate + double-quote a SQL identifier to prevent injection."""
+    """Validate a SQL identifier; return as-is (no quoting)."""
     if not _SAFE_IDENT.match(name):
         raise ValueError(f"Invalid SQL identifier: {name!r}")
-    return '"' + name.replace('"', '""') + '"'
+    return name
 
 
 def _resolve_tables(names: Iterable[str]) -> List[Table]:
@@ -92,7 +92,14 @@ def _resolve_tables(names: Iterable[str]) -> List[Table]:
         if n not in md.tables:
             raise ValueError(f"Unknown table: {n!r}")
         tables.append(md.tables[n])
-    return tables
+    return _topo_sort(tables)
+
+
+def _topo_sort(tables: List[Table]) -> List[Table]:
+    """Reorder *tables* according to the metadata's FK dependency graph."""
+    md = _app_metadata()
+    order = {t.name: i for i, t in enumerate(md.sorted_tables)}
+    return sorted(tables, key=lambda t: order.get(t.name, 0))
 
 
 def _validate_columns(table: Table, cols: Iterable[str]) -> List[str]:
@@ -104,6 +111,32 @@ def _validate_columns(table: Table, cols: Iterable[str]) -> List[str]:
         else:
             raise ValueError(f"Column {c!r} not found on table {table.name!r}")
     return out
+
+
+def _sql_value(v):
+    """Convert a Python value into a SQL literal string fragment."""
+    if v is None:
+        return "NULL"
+    elif isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    elif isinstance(v, (int, float)):
+        return str(v)
+    elif isinstance(v, datetime):
+        return f"'{v.isoformat()}'"
+    elif isinstance(v, (dict, list)):
+        j = json.dumps(v, ensure_ascii=False)
+        escaped = j.replace("'", "''")
+        return f"'{escaped}'"
+    else:
+        s = str(v).replace("'", "''")
+        return f"'{s}'"
+
+
+def _generate_create_table_if_not_exists(t: Table) -> str:
+    """Render a CREATE TABLE IF NOT EXISTS statement for the table."""
+    from sqlalchemy.schema import CreateTable
+    ddl = CreateTable(t, if_not_exists=True).compile(engine)
+    return str(ddl).strip() + ";\n\n"
 
 
 def _fetch_single_table(
@@ -318,23 +351,14 @@ async def export_sql(payload: ExportPayload, db: Session = Depends(get_db)):
         if not rows:
             parts.append(f"\n-- table {t.name} is empty; skipping\n")
             continue
+        # DDL — CREATE TABLE IF NOT EXISTS
+        parts.append(f"\n{_generate_create_table_if_not_exists(t)}\n")
+
         col_list = ", ".join(_quote_ident(c) for c in cols)
         parts.append(f"\n-- {t.name} ({len(rows)} rows)\n")
         batch: List[str] = []
         for r in rows:
-            values = []
-            for v in r:
-                if v is None:
-                    values.append("NULL")
-                elif isinstance(v, (int, float)):
-                    values.append(str(v))
-                elif isinstance(v, bool):
-                    values.append("TRUE" if v else "FALSE")
-                elif isinstance(v, datetime):
-                    values.append(f"'{v.isoformat()}'")
-                else:
-                    s = str(v).replace("'", "''")
-                    values.append(f"'{s}'")
+            values = [_sql_value(v) for v in r]
             batch.append(f"({', '.join(values)})")
             if len(batch) >= 500:
                 parts.append(
