@@ -406,11 +406,21 @@ class PromptGenerator:
             return []
 
     @classmethod
-    def check_final_anomalies(cls, all_answers, all_questions_meta, transcripts=None, confidence_reasons=None):
+    def check_final_anomalies(cls, all_answers, all_questions_meta, confidence_reasons=None):
         """Cross-section quality pass over ALL answers of a submission at submit
         time — catches record-corrupting errors spanning sections (e.g. section
-        B says 'never smoked' while section C reports 10 pack-years)."""
+        B says 'never smoked' while section C reports 10 pack-years).
+
+        Deliberately transcript-free: by submit time the worker may have
+        corrected misheard values by hand, so stale speech must never be
+        judged against the answers. Transcripts live only in the per-section
+        check, where answers are seconds old and unedited.
+        """
         prompt = cls._anomaly_rules(scope="the COMPLETE set of answers for one patient across ALL form sections")
+        prompt += (
+            "No speech transcript is provided at this stage. Judge the answers "
+            "against each other and physical possibility only.\n\n"
+        )
 
         # All answered fields with section context.
         for section, questions_meta in all_questions_meta.items():
@@ -425,14 +435,6 @@ class PromptGenerator:
             for q, val in answered:
                 prompt += cls._build_field_line(q, val) + "\n"
             prompt += "\n"
-
-        # Verbatim transcripts — give the checker the actual speech to confirm
-        # suspicious readings or catch mentioned-but-unanswered values.
-        if transcripts:
-            prompt += "Verbatim transcripts of each section's recording (authoritative record):\n"
-            for section, text in transcripts.items():
-                if text:
-                    prompt += f"[Section {section}]: {text}\n"
 
         if confidence_reasons:
             hints = [

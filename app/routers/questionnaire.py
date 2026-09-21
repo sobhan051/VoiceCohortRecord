@@ -345,25 +345,12 @@ def check_final_anomalies(
             "coding_options": q.coding_options,
         })
 
-    # Verbatim transcripts are stored on Response rows; grab the latest per section.
-    transcripts = {}
-    saved = db.query(models.Response).filter(
-        models.Response.submission_id == sub_id
-    ).order_by(
-        models.Response.processed_at.asc(),
-        models.Response.response_id.asc(),
-    ).all()
-
-    for r in saved:
-        if not r.transcript:
-            continue
-        sk = vcode_to_section.get(r.v_code)
-        if sk:
-            transcripts[sk] = r.transcript
-
+    # No transcripts here by design: answers may contain manual corrections
+    # of misheard values, and stale speech must never be judged against them.
+    # (Transcripts are only used by the per-section check on fresh extractions.)
     try:
         warnings = PromptGenerator.check_final_anomalies(
-            normalized_answers, all_questions_meta, transcripts, confidence_reasons
+            normalized_answers, all_questions_meta, confidence_reasons
         )
         # Token usage of this final sanity pass, stored as "input,output" —
         # summed onto any previously recorded usage.
