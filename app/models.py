@@ -34,6 +34,8 @@ class Section(Base):
     section_key = Column(String(50))
     name_fa = Column(String(255))
     sort_order = Column(Integer, default=0)
+    # ponytail: hard recording cap per section (seconds); client auto-stops, never auto-sends
+    max_recording_seconds = Column(Integer, nullable=False, default=300)
     depends_on_vcode = Column(String(20), nullable=True)
     depends_on_value = Column(String, nullable=True)
     skip_if_vcode = Column(String(20), nullable=True)

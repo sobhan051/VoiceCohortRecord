@@ -73,6 +73,7 @@ def get_form(form_id: str = None, db: Session = Depends(get_db)):
             "name_fa": s.name_fa,
             "depends_on_vcode": s.depends_on_vcode,
             "depends_on_value": s.depends_on_value,
+            "max_recording_seconds": getattr(s, "max_recording_seconds", None) or 300,
             "questions": qs
         })
 

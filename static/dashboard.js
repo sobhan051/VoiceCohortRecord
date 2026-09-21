@@ -94,7 +94,48 @@ function enterDashboard(user) {
         document.getElementById('user-info').textContent =
             `${user.first_name || ''} ${user.last_name || ''}`.trim() || user.national_code;
         loadUserDashboard();
+        maybeShowIntroVideo();
     }
+}
+
+// ---------- First-login demo video (localStorage only, per device) ----------
+// ponytail: local file static/videos/dashboard-demo.mp4; missing file hides player gracefully
+function maybeShowIntroVideo() {
+    let seen = null;
+    try { seen = localStorage.getItem('vcr_seen_dashboard_video'); } catch (e) {}
+    if (seen) return;
+    openIntroVideo(false);
+}
+
+async function openIntroVideo(manual) {
+    const modal = document.getElementById('intro-video-modal');
+    const video = document.getElementById('intro-video');
+    const missing = document.getElementById('intro-video-missing');
+    if (!modal) return;
+    // Hide player gracefully when the mp4 hasn't been dropped in yet.
+    try {
+        const res = await fetch('/static/videos/dashboard-demo.mp4', { method: 'HEAD' });
+        const ok = res.ok;
+        if (video) video.style.display = ok ? '' : 'none';
+        if (missing) missing.classList.toggle('hidden', ok);
+    } catch (e) {
+        if (video) video.style.display = 'none';
+        if (missing) missing.classList.remove('hidden');
+    }
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    if (manual && video && video.style.display !== 'none') {
+        try { await video.play(); } catch (e) {}
+    }
+}
+
+function closeIntroVideo() {
+    const modal = document.getElementById('intro-video-modal');
+    const video = document.getElementById('intro-video');
+    if (video) { try { video.pause(); } catch (e) {} }
+    if (modal) modal.classList.add('hidden');
+    document.body.style.overflow = '';
+    try { localStorage.setItem('vcr_seen_dashboard_video', '1'); } catch (e) {}
 }
 
 function handleLogout() {
@@ -730,7 +771,7 @@ async function loadFormSections() {
                      onclick="selectSection('${s.section_id}')">
                     <div>
                         <p class="font-bold text-gray-800 text-sm">${s.name_fa}</p>
-                        <p class="text-xs text-gray-500">${s.section_key} — ترتیب ${s.sort_order}</p>
+                        <p class="text-xs text-gray-500">${s.section_key} — ترتیب ${s.sort_order} — سقف ضبط ${s.max_recording_seconds || 300} ثانیه</p>
                     </div>
                     <div class="flex gap-1 shrink-0">
                         <button onclick="event.stopPropagation(); editSection('${s.section_id}')" class="p-1.5 rounded-lg hover:bg-blue-50 text-blue-600" aria-label="ویرایش"><svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg></button>
@@ -838,6 +879,7 @@ async function showSectionModal(sectionData) {
     document.getElementById('section-key').value = sectionData?.section_key || '';
     document.getElementById('section-name').value = sectionData?.name_fa || '';
     document.getElementById('section-order').value = sectionData?.sort_order ?? 0;
+    document.getElementById('section-max-sec').value = sectionData?.max_recording_seconds ?? 300;
     document.getElementById('section-dep-vcode').value = sectionData?.depends_on_vcode || '';
     document.getElementById('section-dep-value').value = sectionData?.depends_on_value || '';
 
@@ -885,6 +927,7 @@ document.getElementById('section-form').addEventListener('submit', async (e) => 
         section_key: document.getElementById('section-key').value,
         name_fa: document.getElementById('section-name').value,
         sort_order: parseInt(document.getElementById('section-order').value) || 0,
+        max_recording_seconds: Math.max(10, Math.min(3600, parseInt(document.getElementById('section-max-sec').value) || 300)),
         depends_on_vcode: document.getElementById('section-dep-vcode').value || null,
         depends_on_value: document.getElementById('section-dep-value').value || null,
     };
@@ -1276,6 +1319,8 @@ async function exportFullPgdump() {
 }
 
 // ---------- Expose to global scope ----------
+window.openIntroVideo = openIntroVideo;
+window.closeIntroVideo = closeIntroVideo;
 window.handleLogout = handleLogout;
 window.showAdminSection = showAdminSection;
 window.toggleAdminSidebar = toggleAdminSidebar;

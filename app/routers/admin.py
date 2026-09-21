@@ -370,6 +370,7 @@ async def admin_form_sections(form_id: str, db: Session = Depends(get_db)):
             "depends_on_value": s.depends_on_value,
             "skip_if_vcode": s.skip_if_vcode,
             "skip_if_value": s.skip_if_value,
+            "max_recording_seconds": getattr(s, "max_recording_seconds", None) or 300,
         }
         for s in sections
     ]
@@ -379,6 +380,11 @@ async def admin_form_sections(form_id: str, db: Session = Depends(get_db)):
 async def admin_create_section(payload: dict, db: Session = Depends(get_db)):
     """Create a section"""
     try:
+        try:
+            _max_sec = int(payload.get("max_recording_seconds", 300))
+        except (ValueError, TypeError):
+            _max_sec = 300
+        _max_sec = max(10, min(3600, _max_sec))
         s = models.Section(
             form_id=_int(payload.get("form_id")),
             section_key=payload.get("section_key"),
@@ -388,6 +394,7 @@ async def admin_create_section(payload: dict, db: Session = Depends(get_db)):
             depends_on_value=payload.get("depends_on_value"),
             skip_if_vcode=payload.get("skip_if_vcode"),
             skip_if_value=payload.get("skip_if_value"),
+            max_recording_seconds=_max_sec,
         )
         db.add(s)
         db.commit()
@@ -411,6 +418,12 @@ async def admin_update_section(section_id: str, payload: dict, db: Session = Dep
                   "skip_if_vcode", "skip_if_value"):
         if field in payload:
             setattr(s, field, payload[field])
+    if "max_recording_seconds" in payload:
+        try:
+            _m = int(payload["max_recording_seconds"])
+            s.max_recording_seconds = max(10, min(3600, _m))
+        except (ValueError, TypeError):
+            pass
     if "form_id" in payload:
         s.form_id = _int(payload["form_id"])
     db.commit()

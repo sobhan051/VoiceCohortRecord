@@ -17,7 +17,15 @@ let sessionContext = {};           // { v_code: value } – current submission o
 let crossFormContext = {};         // { v_code: value } – read-only parents from other forms (never submitted)
 let sessionConfidence = {};        // { v_code: 0..1 } – AI confidence per field
 let sessionConfidenceReasons = {}; // { v_code: reason } – why confidence is below 1
-let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value } }
+let sectionMetaMap = {};          // { section_key: { depends_on_vcode, depends_on_value, max_recording_seconds } }
+// ponytail: per-section footer player + hard-limit state; one shared <audio> is enough
+let sectionLimitTimers = {};      // { section_key: timeoutId }
+let sectionTickers = {};          // { section_key: intervalId }
+let sectionElapsed = {};          // { section_key: ms }
+let limitHitBySection = {};       // { section_key: true } – stopped by cap, waits for send/discard
+let playbackAudio = null;         // shared HTMLAudioElement for own-take preview
+let playbackSection = null;
+let playbackUrl = null;
 let fieldWarnings = {};           // { v_code: [ { message, severity } ] }
 let currentSubmissionId = null;   // set once a patient/submission is started
 let questionRulesMap = {};        // { v_code: {logic, rules} } – question dependency rules (visibility_rules)
@@ -60,7 +68,47 @@ document.addEventListener('DOMContentLoaded', async () => {
     } else {
         autoStartFromSession();
     }
+    maybeShowFormGuide();
 });
+
+// ---------- First-visit guide video (localStorage only, per device) ----------
+// ponytail: local file static/videos/form-guide.mp4; missing file hides player gracefully
+function formGuideSeenKey() {
+    const fid = new URLSearchParams(window.location.search).get('form_id') || 'default';
+    return `vcr_seen_form_video_${fid}`;
+}
+function maybeShowFormGuide() {
+    let seen = null;
+    try { seen = localStorage.getItem(formGuideSeenKey()); } catch (e) {}
+    if (seen) return;
+    openFormGuide(false);
+}
+async function openFormGuide(manual) {
+    const modal = document.getElementById('form-guide-modal');
+    const video = document.getElementById('form-guide-video');
+    const missing = document.getElementById('form-guide-missing');
+    if (!modal) return;
+    try {
+        const res = await fetch('/static/videos/form-guide.mp4', { method: 'HEAD' });
+        const ok = res.ok;
+        if (video) video.style.display = ok ? '' : 'none';
+        if (missing) missing.classList.toggle('hidden', ok);
+    } catch (e) {
+        if (video) video.style.display = 'none';
+        if (missing) missing.classList.remove('hidden');
+    }
+    modal.classList.add('open');
+    if (manual && video && video.style.display !== 'none') {
+        try { await video.play(); } catch (e) {}
+    }
+}
+function closeFormGuide() {
+    const modal = document.getElementById('form-guide-modal');
+    const video = document.getElementById('form-guide-video');
+    if (video) { try { video.pause(); } catch (e) {} }
+    if (modal) modal.classList.remove('open');
+    try { localStorage.setItem(formGuideSeenKey(), '1'); } catch (e) {}
+}
 
 function updateProgressPanelTitle(formName) {
     const titleEl = document.getElementById('progress-panel-title');
@@ -153,6 +201,7 @@ function makeFormReadOnly() {
     document.querySelectorAll('section[id^="sect-"] button[id^="btn-"]').forEach(btn => {
         btn.style.display = 'none';
     });
+    document.querySelectorAll('.sect-footer').forEach(el => { el.style.display = 'none'; });
 }
 
 function setupAdminViewButtons() {
@@ -431,23 +480,15 @@ function updateSectionDoneBadges() {
     });
 }
 
-// ---------- Floating Stop Button & Volume Meter ----------
+// ---------- Volume meter (recording indicator; stop lives on the section bars) ----------
 function showFloatingStopButton() {
-    document.getElementById('floating-stop-btn').classList.remove('hidden');
-    document.getElementById('floating-stop-btn').classList.add('flex');
     document.getElementById('volume-meter-container').classList.remove('hidden');
     document.getElementById('volume-meter-container').classList.add('flex');
 }
 
 function hideFloatingStopButton() {
-    document.getElementById('floating-stop-btn').classList.add('hidden');
-    document.getElementById('floating-stop-btn').classList.remove('flex');
     document.getElementById('volume-meter-container').classList.add('hidden');
     document.getElementById('volume-meter-container').classList.remove('flex');
-}
-
-function stopRecordingViaFab() {
-    if (activeRecordingSection) toggleRecording(activeRecordingSection);
 }
 
 // ---------- Section‑Level Visibility (DB rules) ----------
@@ -1064,7 +1105,8 @@ function renderForm(sections) {
     sections.forEach(section => {
         sectionMetaMap[section.section_key] = {
             depends_on_vcode: section.depends_on_vcode || null,
-            depends_on_value: section.depends_on_value || null
+            depends_on_value: section.depends_on_value || null,
+            max_recording_seconds: Math.max(10, Math.min(3600, parseInt(section.max_recording_seconds) || 300))
         };
         sectionProgressData[section.section_key] = {
             name_fa: section.name_fa,
@@ -1131,10 +1173,40 @@ function renderForm(sections) {
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-6">
                     ${bodyHtml}
                 </div>
+                <div class="sect-footer" id="foot-${section.section_key}">
+                    <div class="sect-controls">
+                        <button type="button" id="foot-record-${section.section_key}" onclick="toggleRecording('${section.section_key}')" class="sect-btn sect-btn-record">
+                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+                            <span id="foot-record-text-${section.section_key}">ضبط</span>
+                        </button>
+                        <span class="sect-timer" id="foot-timer-${section.section_key}" dir="ltr"></span>
+                        <button type="button" id="foot-send-${section.section_key}" onclick="sendFootRecording('${section.section_key}')" class="sect-btn sect-btn-send" disabled>
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                            <span>ارسال</span>
+                        </button>
+                        <button type="button" id="foot-trash-${section.section_key}" onclick="discardFootRecording('${section.section_key}')" class="sect-btn sect-btn-trash" disabled aria-label="دور انداختن ضبط">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                        </button>
+                    </div>
+                    <div class="playbar" id="playbar-${section.section_key}" style="display:none">
+                        <button type="button" id="playbar-play-${section.section_key}" onclick="togglePlayback('${section.section_key}')" class="playbar-play" aria-label="پخش">
+                            <svg id="playbar-play-icon-${section.section_key}" class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                            <span class="eq" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+                        </button>
+                        <input type="range" id="playbar-range-${section.section_key}" min="0" max="1000" value="0" step="1" oninput="seekPlayback('${section.section_key}', this.value)">
+                        <span class="ptime" id="playbar-time-${section.section_key}" dir="ltr">0:00 / 0:00</span>
+                    </div>
+                    <div class="limit-prompt" id="limit-prompt-${section.section_key}" style="display:none">
+                        <svg class="w-5 h-5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                        <span>سقف زمانی به پایان رسید — ضبط متوقف شد؛ از دکمه‌های بالا ارسال یا دور بیندازید.</span>
+                    </div>
+                </div>
             </section>
         `;
         container.insertAdjacentHTML('beforeend', sectHtml);
     });
+    // Init footer states (idle, timer hint shows the cap).
+    Object.keys(sectionMetaMap).forEach(k => syncSectionControls(k, 'idle'));
 
 }
 
@@ -1372,6 +1444,209 @@ function renderQuestion(q) {
     `;
 }
 
+// ---------- Section footer controls: record/stop/rerecord + play bar + send ----------
+// ponytail: capture-then-send (no auto-send); limit stops capture and asks send/discard
+function sectionLimit(sectionKey) {
+    const m = sectionMetaMap[sectionKey];
+    const v = m ? parseInt(m.max_recording_seconds) : 300;
+    return Math.max(10, Math.min(3600, v || 300));
+}
+function fmtClock(totalSec) {
+    // ponytail: MediaRecorder webm blobs report Infinity until seeked — never render NaN
+    if (!isFinite(totalSec)) return '0:00';
+    totalSec = Math.max(0, Math.floor(totalSec || 0));
+    return `${Math.floor(totalSec / 60)}:${String(totalSec % 60).padStart(2, '0')}`;
+}
+function syncSectionControls(sectionKey, state) {
+    // state: idle | recording | recorded | sending
+    const footRec = document.getElementById(`foot-record-${sectionKey}`);
+    const footRecText = document.getElementById(`foot-record-text-${sectionKey}`);
+    const footTrash = document.getElementById(`foot-trash-${sectionKey}`);
+    const footSend = document.getElementById(`foot-send-${sectionKey}`);
+    const playbar = document.getElementById(`playbar-${sectionKey}`);
+    const timer = document.getElementById(`foot-timer-${sectionKey}`);
+    const limit = sectionLimit(sectionKey);
+    const hasBlob = !!lastAudioBySection[sectionKey];
+    if (footRec) {
+        footRec.classList.remove('sect-btn-record', 'sect-btn-stop', 'sect-btn-rerecord');
+        if (state === 'recording') {
+            footRec.classList.add('sect-btn-stop');
+            if (footRecText) footRecText.textContent = 'توقف';
+        } else if (state === 'recorded' || state === 'sending' || hasBlob) {
+            footRec.classList.add('sect-btn-rerecord');
+            if (footRecText) footRecText.textContent = 'ضبط مجدد';
+        } else {
+            footRec.classList.add('sect-btn-record');
+            if (footRecText) footRecText.textContent = 'ضبط';
+        }
+        footRec.disabled = state === 'sending';
+    }
+    if (footTrash) footTrash.disabled = !hasBlob || state === 'recording' || state === 'sending';
+    if (footSend) footSend.disabled = !hasBlob || state === 'recording' || state === 'sending';
+    if (playbar) playbar.style.display = hasBlob ? 'flex' : 'none';
+    if (timer && (state === 'idle' && !hasBlob)) { timer.textContent = ''; timer.classList.remove('limit-near', 'limit-hit'); }
+    if (timer && state === 'idle' && hasBlob && !timer.textContent) timer.textContent = `سقف ${fmtClock(limit)}`;
+}
+function stopPlayback(sectionKey) {
+    if (playbackSection && playbackSection !== sectionKey && playbackAudio) {
+        try { playbackAudio.pause(); } catch (e) {}
+    }
+    if (playbackSection === sectionKey && playbackAudio) {
+        try { playbackAudio.pause(); } catch (e) {}
+        playbackSection = null;
+    }
+    const btn = document.getElementById(`playbar-play-${sectionKey}`);
+    const bar = document.getElementById(`playbar-${sectionKey}`);
+    const range = document.getElementById(`playbar-range-${sectionKey}`);
+    if (btn) btn.classList.remove('is-playing');
+    if (bar) bar.classList.remove('is-playing');
+    if (range) range.value = 0;
+    const ic = document.getElementById(`playbar-play-icon-${sectionKey}`);
+    if (ic) ic.innerHTML = '<path d="M8 5v14l11-7z"/>';
+}
+function togglePlayback(sectionKey) {
+    const blob = lastAudioBySection[sectionKey];
+    if (!blob || recordingStates[sectionKey]) return;
+    if (playbackSection === sectionKey && playbackAudio && !playbackAudio.paused) {
+        playbackAudio.pause();
+        return;
+    }
+    stopPlayback(sectionKey);
+    if (playbackUrl) { try { URL.revokeObjectURL(playbackUrl); } catch (e) {} }
+    playbackUrl = URL.createObjectURL(blob);
+    if (!playbackAudio) {
+        playbackAudio = new Audio();
+        playbackAudio.preload = 'metadata';
+    }
+    playbackSection = sectionKey;
+    playbackAudio.src = playbackUrl;
+    const btn = document.getElementById(`playbar-play-${sectionKey}`);
+    const bar = document.getElementById(`playbar-${sectionKey}`);
+    const range = document.getElementById(`playbar-range-${sectionKey}`);
+    const time = document.getElementById(`playbar-time-${sectionKey}`);
+    const ic = document.getElementById(`playbar-play-icon-${sectionKey}`);
+    playbackAudio.ontimeupdate = () => {
+        const d = playbackAudio.duration || 0, c = playbackAudio.currentTime || 0;
+        if (range && isFinite(d) && d > 0) range.value = Math.round((c / d) * 1000);
+        if (time) time.textContent = `${fmtClock(c)} / ${fmtClock(d)}`;
+    };
+    const begin = () => playbackAudio.play().catch(() => stopPlayback(sectionKey));
+    playbackAudio.onloadedmetadata = () => {
+        const d = playbackAudio.duration;
+        if (d === Infinity) {
+            // webm/opus blobs report Infinity until seeked — force a metadata scan, then play
+            const onDur = () => {
+                playbackAudio.removeEventListener('durationchange', onDur);
+                try { playbackAudio.currentTime = 0; } catch (e) {}
+                if (time) time.textContent = `0:00 / ${fmtClock(playbackAudio.duration)}`;
+                begin();
+            };
+            playbackAudio.addEventListener('durationchange', onDur);
+            try { playbackAudio.currentTime = 1e6; } catch (e) { begin(); }
+        } else {
+            if (time) time.textContent = `0:00 / ${fmtClock(d)}`;
+            begin();
+        }
+    };
+    playbackAudio.onplay = () => {
+        if (btn) btn.classList.add('is-playing');
+        if (bar) bar.classList.add('is-playing');
+        if (ic) ic.innerHTML = '<rect x="6" y="6" width="12" height="12" rx="2" />';
+    };
+    const resetUi = () => stopPlayback(sectionKey);
+    playbackAudio.onpause = resetUi;
+    playbackAudio.onended = resetUi;
+    playbackAudio.onerror = () => stopPlayback(sectionKey);
+    if (range) range.value = 0;
+    if (time) time.textContent = '0:00 / 0:00';
+    // Safety net: if metadata events never fire (odd codec), still try to play.
+    setTimeout(() => {
+        if (playbackSection === sectionKey && playbackAudio && playbackAudio.paused && playbackAudio.currentTime === 0) begin();
+    }, 2500);
+}
+function seekPlayback(sectionKey, v) {
+    if (playbackSection !== sectionKey || !playbackAudio) return;
+    const d = playbackAudio.duration || 0;
+    if (isFinite(d) && d > 0) playbackAudio.currentTime = (parseInt(v) / 1000) * d;
+}
+function sendFootRecording(sectionKey) {
+    const prompt = document.getElementById(`limit-prompt-${sectionKey}`);
+    if (prompt) prompt.style.display = 'none';
+    delete limitHitBySection[sectionKey];
+    stopPlayback(sectionKey);
+    const text = document.getElementById(`text-${sectionKey}`);
+    if (text) text.innerText = 'در حال تحلیل...';
+    syncSectionControls(sectionKey, 'sending');
+    sendAudioToServer(sectionKey, null);
+}
+function discardFootRecording(sectionKey) {
+    const prompt = document.getElementById(`limit-prompt-${sectionKey}`);
+    if (prompt) prompt.style.display = 'none';
+    delete limitHitBySection[sectionKey];
+    stopPlayback(sectionKey);
+    delete lastAudioBySection[sectionKey];
+    delete lastAudioBySection[`${sectionKey}_format`];
+    syncSectionControls(sectionKey, 'idle');
+    resetButtonUI(sectionKey);
+    showToast('ضبط دور انداخته شد — می‌توانید دوباره ضبط کنید.');
+}
+function onRecordingCaptured(sectionKey) {
+    stopPlayback(sectionKey);
+    const wasLimit = !!limitHitBySection[sectionKey];
+    syncSectionControls(sectionKey, 'recorded');
+    resetButtonUI(sectionKey);
+    // Top button becomes "rerecord" affordance (no auto-send anymore).
+    const text = document.getElementById(`text-${sectionKey}`);
+    if (text) text.innerText = hasAnyAnswerForSection(sectionKey) ? 'ضبط مجدد' : 'ضبط مجدد';
+    if (wasLimit) {
+        const prompt = document.getElementById(`limit-prompt-${sectionKey}`);
+        if (prompt) prompt.style.display = 'flex';
+        showToast('سقف زمانی بخش به پایان رسید — برای ارسال یا دور انداختن انتخاب کنید.');
+    } else {
+        showToast('ضبط نگه داشته شد — پخش کنید و سپس ارسال کنید.');
+    }
+}
+function hasAnyAnswerForSection(sectionKey) { return !!lastAudioBySection[sectionKey]; }
+function clearLimitTimer(sectionKey) {
+    if (sectionLimitTimers[sectionKey]) { clearTimeout(sectionLimitTimers[sectionKey]); delete sectionLimitTimers[sectionKey]; }
+    if (sectionTickers[sectionKey]) { clearInterval(sectionTickers[sectionKey]); delete sectionTickers[sectionKey]; }
+    delete sectionElapsed[sectionKey];
+}
+function startLimitTimer(sectionKey) {
+    clearLimitTimer(sectionKey);
+    const limit = sectionLimit(sectionKey);
+    const timerEl = document.getElementById(`foot-timer-${sectionKey}`);
+    const t0 = Date.now();
+    sectionElapsed[sectionKey] = 0;
+    sectionTickers[sectionKey] = setInterval(() => {
+        const el = Math.floor((Date.now() - t0) / 1000);
+        if (timerEl) {
+            timerEl.textContent = `${fmtClock(el)} / ${fmtClock(limit)}`;
+            timerEl.classList.toggle('limit-near', limit - el <= 30 && limit - el > 0);
+            timerEl.classList.toggle('limit-hit', limit - el <= 0);
+        }
+    }, 500);
+    // Hard cap: stop capture, NEVER auto-send — user picks send/discard.
+    sectionLimitTimers[sectionKey] = setTimeout(() => {
+        if (!recordingStates[sectionKey]) return;
+        limitHitBySection[sectionKey] = true;
+        stopRecordingTracks(sectionKey);
+    }, limit * 1000);
+}
+function stopRecordingTracks(sectionKey) {
+    try { if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop(); } catch (e) {}
+    try { if (mediaRecorder && mediaRecorder.stream) mediaRecorder.stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+    if (typeof audioContext !== 'undefined' && audioContext) {
+        try { audioContext.close().catch(() => {}); } catch (e) {}
+        audioContext = null; analyserNode = null;
+    }
+    try { silenceDetectionActive = false; } catch (e) {}
+    recordingStates[sectionKey] = false;
+    if (activeRecordingSection === sectionKey) activeRecordingSection = null;
+    hideFloatingStopButton();
+    clearLimitTimer(sectionKey);
+}
+
 // Modified toggleRecording function with bitrate control
 async function toggleRecording(sectionKey) {
     const btn = document.getElementById(`btn-${sectionKey}`);
@@ -1411,9 +1686,12 @@ async function toggleRecording(sectionKey) {
 
             mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
             mediaRecorder.onstop = () => {
-                // Use the correct MIME type for the blob
-                const audioBlob = new Blob(audioChunks, { type: mediaRecorder.audioFormat.mime });
-                sendAudioToServer(sectionKey, audioBlob, mediaRecorder.audioFormat);
+                // Capture-then-send: hold the blob for preview, send only on user action.
+                const fmt = mediaRecorder.audioFormat || { mime: '', label: 'webm' };
+                const audioBlob = new Blob(audioChunks, { type: fmt.mime || '' });
+                lastAudioBySection[sectionKey] = audioBlob;
+                lastAudioBySection[`${sectionKey}_format`] = fmt;
+                onRecordingCaptured(sectionKey);
             };
 
             // Start recording with data collection every second
@@ -1466,35 +1744,30 @@ async function toggleRecording(sectionKey) {
 
             recordingStates[sectionKey] = true;
             activeRecordingSection = sectionKey;
+            delete limitHitBySection[sectionKey];
+            const lp = document.getElementById(`limit-prompt-${sectionKey}`);
+            if (lp) lp.style.display = 'none';
+            stopPlayback(sectionKey);
             showFloatingStopButton();
             document.getElementById('volume-meter-fill').style.height = '0%';
 
             btn.classList.add('mic-recording');
             text.innerText = "توقف ضبط";
             icon.innerHTML = `<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>`;
+            syncSectionControls(sectionKey, 'recording');
+            startLimitTimer(sectionKey);
         } catch (err) {
             console.error("Mic access denied:", err);
             alert("خطا: اجازه دسترسی به میکروفون داده نشده است.");
             activeRecordingSection = null;
             hideFloatingStopButton();
+            clearLimitTimer(sectionKey);
         }
     } else {
-        mediaRecorder.stop();
-        mediaRecorder.stream.getTracks().forEach(track => track.stop());
-        if (audioContext) {
-            audioContext.close().catch(console.error);
-            audioContext = null;
-            analyserNode = null;
-        }
-        silenceDetectionActive = false;
-        recordingStates[sectionKey] = false;
-        activeRecordingSection = null;
-        hideFloatingStopButton();
-
+        // Manual stop = capture, not send. Sending happens via footer send button.
+        stopRecordingTracks(sectionKey);
         btn.classList.remove('mic-recording');
-        btn.classList.add('bg-blue-100', 'text-blue-600');
-        text.innerText = "در حال تحلیل...";
-        icon.innerHTML = `<svg class="animate-spin h-5 w-5" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+        text.innerText = "در حال ذخیره ضبط...";
     }
 }
 
@@ -1607,6 +1880,8 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
             // Clear stored audio on success
             delete lastAudioBySection[sectionKey];
             delete lastAudioBySection[`${sectionKey}_format`];
+            stopPlayback(sectionKey);
+            syncSectionControls(sectionKey, 'idle');
 
             // Sanity check — fire-and-forget, NON-BLOCKING. The server queues
             // the AI pass and returns a check_id at once; we poll for the
@@ -1618,6 +1893,8 @@ async function sendAudioToServer(sectionKey, blob, audioFormat) {
         offerAudioRetry(sectionKey, "ارتباط با سرور با مشکل مواجه شد.");
     } finally {
         resetButtonUI(sectionKey);
+        // Keep preview available on failure so the user can retry via footer send.
+        if (lastAudioBySection[sectionKey]) syncSectionControls(sectionKey, 'recorded');
     }
 }
 
@@ -1644,6 +1921,7 @@ function retryAudioSend() {
     // Re-show the analyzing state, then resend the held blob.
     const text = document.getElementById(`text-${sectionKey}`);
     if (text) text.innerText = "در حال تحلیل...";
+    syncSectionControls(sectionKey, 'sending');
     sendAudioToServer(sectionKey, null);
 }
 
@@ -1935,9 +2213,11 @@ function resetButtonUI(sectionKey) {
     const btn = document.getElementById(`btn-${sectionKey}`);
     const icon = document.getElementById(`icon-${sectionKey}`);
     const text = document.getElementById(`text-${sectionKey}`);
+    if (!btn || !icon || !text) return;
 
     btn.className = "flex items-center gap-2 px-5 py-2.5 bg-gray-100 rounded-2xl hover:bg-gray-200 transition-all group";
-    text.innerText = "ثبت با صدا";
+    // Top button mirrors the footer: after a capture it offers re-record.
+    text.innerText = lastAudioBySection[sectionKey] ? "ضبط مجدد" : "ثبت با صدا";
     icon.innerHTML = `<svg class="w-6 h-6 text-gray-500 group-hover:text-blue-600" fill="currentColor" viewBox="0 0 24 24">
         <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
         <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
