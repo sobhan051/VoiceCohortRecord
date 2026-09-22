@@ -98,44 +98,39 @@ function enterDashboard(user) {
     }
 }
 
-// ---------- First-login demo video (localStorage only, per device) ----------
-// ponytail: local file static/videos/dashboard-demo.mp4; missing file hides player gracefully
+// ---------- First-login guided tour (localStorage only, per device) ----------
+// ponytail: interactive tour over the real UI — no media files to record or host
 function maybeShowIntroVideo() {
     let seen = null;
     try { seen = localStorage.getItem('vcr_seen_dashboard_video'); } catch (e) {}
     if (seen) return;
-    openIntroVideo(false);
+    startDashboardTour(false);
 }
 
-async function openIntroVideo(manual) {
-    const modal = document.getElementById('intro-video-modal');
-    const video = document.getElementById('intro-video');
-    const missing = document.getElementById('intro-video-missing');
-    if (!modal) return;
-    // Hide player gracefully when the mp4 hasn't been dropped in yet.
-    try {
-        const res = await fetch('/static/videos/dashboard-demo.mp4', { method: 'HEAD' });
-        const ok = res.ok;
-        if (video) video.style.display = ok ? '' : 'none';
-        if (missing) missing.classList.toggle('hidden', ok);
-    } catch (e) {
-        if (video) video.style.display = 'none';
-        if (missing) missing.classList.remove('hidden');
-    }
-    modal.classList.remove('hidden');
-    document.body.style.overflow = 'hidden';
-    if (manual && video && video.style.display !== 'none') {
-        try { await video.play(); } catch (e) {}
-    }
+function dashboardTourSteps() {
+    return [
+        { selector: '#open-forms-block', title: 'شروع پرسشنامه', text: 'فرم‌های قابل تکمیل اینجا هستند. روی «شروع پرسشنامه» بزنید تا وارد صفحه سوالات شوید.' },
+        { selector: '#user-content table', title: 'پرسشنامه‌های شما', text: 'پرسشنامه‌های نیمه‌تمام را از اینجا با «ادامه» پیگیری کنید.' },
+        { selector: '#dashboard-tour-replay', title: 'دیدن دوباره راهنما', text: 'هر وقت خواستید این تور را دوباره ببینید، روی همین دکمه «راهنما» بالای صفحه بزنید.' },
+    ];
 }
 
-function closeIntroVideo() {
-    const modal = document.getElementById('intro-video-modal');
-    const video = document.getElementById('intro-video');
-    if (video) { try { video.pause(); } catch (e) {} }
-    if (modal) modal.classList.add('hidden');
-    document.body.style.overflow = '';
-    try { localStorage.setItem('vcr_seen_dashboard_video', '1'); } catch (e) {}
+function startDashboardTour(manual) {
+    if (typeof window.startTour !== 'function') return;
+    const finish = () => { try { localStorage.setItem('vcr_seen_dashboard_video', '1'); } catch (e) {} };
+    if (!manual) {
+        // Wait for the dashboard content (async render) before stepping.
+        let tries = 0;
+        const wait = setInterval(() => {
+            tries++;
+            if (document.getElementById('open-forms-block') || tries > 40) {
+                clearInterval(wait);
+                window.startTour(dashboardTourSteps(), finish);
+            }
+        }, 250);
+    } else {
+        window.startTour(dashboardTourSteps(), finish);
+    }
 }
 
 function handleLogout() {
@@ -1319,8 +1314,7 @@ async function exportFullPgdump() {
 }
 
 // ---------- Expose to global scope ----------
-window.openIntroVideo = openIntroVideo;
-window.closeIntroVideo = closeIntroVideo;
+window.startDashboardTour = startDashboardTour;
 window.handleLogout = handleLogout;
 window.showAdminSection = showAdminSection;
 window.toggleAdminSidebar = toggleAdminSidebar;

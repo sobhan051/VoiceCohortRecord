@@ -71,8 +71,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     maybeShowFormGuide();
 });
 
-// ---------- First-visit guide video (localStorage only, per device) ----------
-// ponytail: local file static/videos/form-guide.mp4; missing file hides player gracefully
+// ---------- First-visit guided tour (localStorage only, per device) ----------
+// ponytail: interactive tour over the real controls — no media files
 function formGuideSeenKey() {
     const fid = new URLSearchParams(window.location.search).get('form_id') || 'default';
     return `vcr_seen_form_video_${fid}`;
@@ -81,33 +81,44 @@ function maybeShowFormGuide() {
     let seen = null;
     try { seen = localStorage.getItem(formGuideSeenKey()); } catch (e) {}
     if (seen) return;
-    openFormGuide(false);
+    startFormTour(false);
 }
-async function openFormGuide(manual) {
-    const modal = document.getElementById('form-guide-modal');
-    const video = document.getElementById('form-guide-video');
-    const missing = document.getElementById('form-guide-missing');
-    if (!modal) return;
-    try {
-        const res = await fetch('/static/videos/form-guide.mp4', { method: 'HEAD' });
-        const ok = res.ok;
-        if (video) video.style.display = ok ? '' : 'none';
-        if (missing) missing.classList.toggle('hidden', ok);
-    } catch (e) {
-        if (video) video.style.display = 'none';
-        if (missing) missing.classList.remove('hidden');
-    }
-    modal.classList.add('open');
-    if (manual && video && video.style.display !== 'none') {
-        try { await video.play(); } catch (e) {}
-    }
+function firstSectionKey() {
+    const sect = document.querySelector('section[id^="sect-"]');
+    return sect ? sect.id.replace('sect-', '') : null;
 }
-function closeFormGuide() {
-    const modal = document.getElementById('form-guide-modal');
-    const video = document.getElementById('form-guide-video');
-    if (video) { try { video.pause(); } catch (e) {} }
-    if (modal) modal.classList.remove('open');
-    try { localStorage.setItem(formGuideSeenKey(), '1'); } catch (e) {}
+function formTourSteps() {
+    const k = firstSectionKey();
+    const steps = [];
+    if (k) {
+        steps.push({ selector: `#btn-${k}`, title: 'ضبط صدا', text: 'برای هر بخش روی «ثبت با صدا» بزنید، بعد سوال را کامل یا خلاصه بخوانید و جواب را بلند بگویید.' });
+        steps.push({ selector: `#foot-record-${k}`, title: 'توقف و ضبط مجدد', text: 'همین دکمه پایین بخش هم ضبط را شروع و با «توقف» تمام می‌کند؛ بعد از توقف تبدیل به «ضبط مجدد» می‌شود. سقف زمانی هم کنار آن است.' });
+        steps.push({ selector: `#foot-send-${k}`, title: 'گوش دادن و ارسال', text: 'بعد از توقف، نوار پخش همین‌جا ظاهر می‌شود — ضبط را گوش کنید، بعد «ارسال» بزنید تا هوش مصنوعی فرم را پر کند. با سطل‌آشغال هم می‌توانید ضبط را دور بیندازید.' });
+    }
+    // ponytail: volume meter only exists mid-recording, so its guidance lives
+    // in the record step text above; these target always-visible UI instead.
+    steps.push({ selector: '#progress-section-list', title: 'نوار پیگیری بخش‌ها', text: 'این فهرست نشان می‌دهد هر بخش چند سوال جواب داده شده؛ با زدن روی هر بخش مستقیم به همان‌جا می‌روید.', minWidth: 1025 });
+    steps.push({ selector: '#panel-submit-btn', title: 'ثبت و ذخیره', text: 'با «ثبت و خروج» پیشرفت ذخیره می‌شود (پیش‌نویس) و وقتی همه بخش‌ها کامل شد، «ثبت نهایی» فعال می‌شود.', minWidth: 1025 });
+    steps.push({ selector: '#progress-panel-toggle', title: 'پیشرفت و ثبت', text: 'پیشرفت بخش‌ها و دکمه ثبت نهایی پشت این دکمه است؛ بازش کنید تا بخش‌ها را ببینید و بین آن‌ها جابه‌جا شوید.', maxWidth: 1024 });
+    return steps;
+}
+function startFormTour(manual) {
+    if (typeof window.startTour !== 'function') return;
+    const finish = () => { try { localStorage.setItem(formGuideSeenKey(), '1'); } catch (e) {} };
+    if (!manual) {
+        // Sections render async — wait for the first one before stepping.
+        let tries = 0;
+        const wait = setInterval(() => {
+            tries++;
+            if (firstSectionKey() || tries > 40) {
+                clearInterval(wait);
+                if (firstSectionKey()) window.startTour(formTourSteps(), finish);
+                else finish();
+            }
+        }, 250);
+    } else {
+        if (firstSectionKey()) window.startTour(formTourSteps(), finish);
+    }
 }
 
 function updateProgressPanelTitle(formName) {
